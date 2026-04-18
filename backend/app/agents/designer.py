@@ -4,6 +4,7 @@ Produces complete design_spec with screens, API spec, and data models.
 Uses RAG to retrieve relevant research context from Qdrant.
 """
 
+import logging
 import re
 from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
@@ -28,6 +29,9 @@ from app.schemas.designer import (
     Relationship,
 )
 from app.schemas.research_pm import PRD
+
+
+logger = logging.getLogger(__name__)
 
 
 def _slugify(value: str) -> str:
@@ -463,10 +467,19 @@ Return your complete design specification as a JSON object."""
 class DesignerAgent:
     """Designer Agent for design specification generation."""
 
-    def __init__(self):
-        api_key = settings.GEMINI_API_KEY or settings.OPENAI_API_KEY
-        base_url = settings.GEMINI_BASE_URL if settings.GEMINI_API_KEY else settings.OPENAI_BASE_URL
-        model = settings.GEMINI_MODEL if settings.GEMINI_API_KEY else settings.OPENAI_MODEL
+    def __init__(self, provider: Optional[str] = None):
+        selected_provider = provider or ("gemini" if settings.GEMINI_API_KEY else "openai_compatible")
+        if selected_provider == "gemini":
+            api_key = settings.GEMINI_API_KEY
+            base_url = settings.GEMINI_BASE_URL
+            model = settings.GEMINI_MODEL
+        else:
+            api_key = settings.OPENAI_API_KEY
+            base_url = settings.OPENAI_BASE_URL
+            model = settings.OPENAI_MODEL
+
+        self.provider = selected_provider
+        self.model_name = model
 
         self.llm = ChatOpenAI(
             model=model,
@@ -594,6 +607,13 @@ Now create the complete design specification.
 
         prompt = self._build_design_prompt(prd, research_context)
 
+        logger.info(
+          "[designer] generating design_spec via provider=%s model=%s run_id=%s",
+          self.provider,
+          self.model_name,
+          run_id,
+        )
+
         last_error = None
         for attempt in range(self.max_retries):
             try:
@@ -605,10 +625,18 @@ Now create the complete design specification.
                 )
                 result = self.parser.parse(response.content)
 
+                logger.info(
+                  "[designer] generated design_spec via llm with screens=%s flows=%s apis=%s",
+                  len(result.screens),
+                  len(result.interaction_flows),
+                  len(result.api_spec),
+                )
+
                 return DesignerAgentOutput(run_id=run_id, design_spec=result)
 
             except Exception as e:
                 last_error = e
+                logger.warning("[designer] attempt %s failed: %s", attempt + 1, str(e)[:250])
                 if attempt < self.max_retries - 1:
                     continue
 
@@ -620,8 +648,8 @@ Now create the complete design specification.
 async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) -> Dict[str, Any]:
     """Main entry point for Designer Agent.
 
-    The design spec is derived from the PRD so the UI can render a readable
-    document while downstream agents still receive structured JSON.
+    Primary path uses the LLM-backed DesignerAgent (Gemini when configured).
+    If generation fails, falls back to a deterministic PRD-derived spec.
     """
     if isinstance(input_data, dict):
         input_data = DesignerAgentInput.model_validate(input_data)
@@ -629,9 +657,38 @@ async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) ->
     run_id = str(input_data.run_id)
     prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
 
-    design_spec = _build_design_spec_from_prd(prd)
+    try:
+      primary_provider = "gemini" if settings.GEMINI_API_KEY else "openai_compatible"
+      agent = DesignerAgent(provider=primary_provider)
+      result = await agent.run(input_data)
+      return result.model_dump(mode="json")
+    except Exception as primary_exc:
+      if settings.GEMINI_API_KEY:
+        logger.warning(
+          "[designer] primary gemini generation failed, trying openai-compatible fallback run_id=%s error=%s",
+          run_id,
+          str(primary_exc)[:500],
+        )
+        try:
+          fallback_agent = DesignerAgent(provider="openai_compatible")
+          fallback_result = await fallback_agent.run(input_data)
+          return fallback_result.model_dump(mode="json")
+        except Exception as secondary_exc:
+          logger.error(
+            "[designer] llm generation failed on both providers, using deterministic fallback run_id=%s gemini_error=%s openai_error=%s",
+            run_id,
+            str(primary_exc)[:250],
+            str(secondary_exc)[:250],
+          )
+      else:
+        logger.error(
+          "[designer] llm generation failed, using deterministic fallback run_id=%s error=%s",
+          run_id,
+          str(primary_exc)[:500],
+        )
 
-    return {
+      design_spec = _build_design_spec_from_prd(prd)
+      return {
         "run_id": run_id,
         "design_spec": design_spec,
-    }
+      }

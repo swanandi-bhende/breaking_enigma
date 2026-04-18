@@ -173,24 +173,57 @@ function wrapText(value: string, maxLength = 26): string[] {
 function buildArchitectureMermaid(payload: DesignerPayload): string {
   const architecture = payload.system_architecture || {};
   const services = asArray<string>(architecture.external_services);
+  const screens = asArray<ScreenSpec>(payload.screens);
+  const apis = asArray<APIEndpointSpec>(payload.api_spec);
+  const models = asArray<DataModelSpec>(payload.data_models);
+  const commPatterns = architecture.communication_patterns || {};
 
   const serviceNodes = services.length > 0
     ? services.map((service, index) => `  ext${index}[${JSON.stringify(service)}]`).join('\n')
     : '  ext["External services"]';
 
+  const screenNodes = screens.slice(0, 4).map((screen, index) => `  ui${index}[${JSON.stringify(screen.screen_name)}]`).join('\n');
+  const modelNodes = models.slice(0, 4).map((model, index) => `  dm${index}[${JSON.stringify(model.entity_name)}]`).join('\n');
+  const apiNodes = apis.slice(0, 6).map((api, index) => `  ep${index}[${JSON.stringify(`${api.method} ${api.path}`)}]`).join('\n');
+
+  const uiEdges = screens.length > 0
+    ? screens.slice(0, 4).map((screen, index) => `  browser -->|Route ${index + 1}| ui${index}`).join('\n')
+    : '  browser -->|Route| api';
+
+  const apiEdges = apis.length > 0
+    ? apis.slice(0, 6).map((_, index) => `  ui${Math.min(index, Math.max(0, Math.min(3, screens.length - 1)))} --> ep${index}\n  ep${index} --> api`).join('\n')
+    : '  browser --> api';
+
+  const modelEdges = models.length > 0
+    ? models.slice(0, 4).map((_, index) => `  api --> dm${index}`).join('\n')
+    : '  api --> db';
+
+  const commNodes = Object.entries(commPatterns)
+    .slice(0, 4)
+    .map(([key, value], index) => `  cp${index}[${JSON.stringify(`${key}: ${toText(value)}`)}]`)
+    .join('\n');
+  const commEdges = Object.entries(commPatterns)
+    .slice(0, 4)
+    .map((_, index) => `  api -.-> cp${index}`)
+    .join('\n');
+
   return `flowchart TB
   user((User))
-  browser["Next.js Frontend"]
-  api["FastAPI Backend"]
+  browser[${JSON.stringify(architecture.frontend ? toText(architecture.frontend) : 'Web Frontend')}]
+  api[${JSON.stringify(architecture.backend ? toText(architecture.backend) : 'Backend API')}]
   worker["Celery Worker"]
-  db[(PostgreSQL)]
-  cache[(Redis)]
-  rag[(Qdrant)]
+  db[(${JSON.stringify(architecture.database ? toText(architecture.database) : 'Database')})]
+  cache[(${JSON.stringify(architecture.cache ? toText(architecture.cache) : 'Cache')})]
+  rag[("Qdrant")]
 ${serviceNodes}
+${screenNodes || ''}
+${apiNodes || ''}
+${modelNodes || ''}
+${commNodes || ''}
 
   user --> browser
-  browser -->|REST| api
-  browser -->|WebSocket| api
+${uiEdges}
+${apiEdges}
   api --> worker
   api --> db
   api --> cache
@@ -198,6 +231,8 @@ ${serviceNodes}
   worker --> cache
   api --> rag
   worker --> rag
+${modelEdges}
+${commEdges}
 ${services.length > 0 ? services.map((_, index) => `  api --> ext${index}`).join('\n') : '  api --> ext'}
 `;
 }
@@ -208,26 +243,35 @@ function buildFlowMermaid(payload: DesignerPayload): string {
     return 'flowchart LR\n  start((Start)) --> finish((Finish))';
   }
 
-  const flow = flows[0];
-  const steps = asArray<string>(flow.steps);
-  const nodes = steps.length > 0
-    ? steps.map((step, index) => `  s${index}[${JSON.stringify(step)}]`).join('\n')
-    : '  s0["Review screen"]\n  s1["Submit action"]';
+  const flowBlocks = flows.slice(0, 2).map((flow, flowIndex) => {
+    const prefix = `f${flowIndex}`;
+    const steps = asArray<string>(flow.steps).slice(0, 6);
+    const nodes = steps.length > 0
+      ? steps.map((step, index) => `  ${prefix}s${index}[${JSON.stringify(step)}]`).join('\n')
+      : `  ${prefix}s0["Review screen"]\n  ${prefix}s1["Submit action"]`;
 
-  const chain = steps.length > 0
-    ? steps.map((_, index) => `  ${index === 0 ? 'start' : `s${index - 1}`} --> s${index}`).join('\n') + `\n  s${steps.length - 1} --> finish`
-    : '  start --> s0\n  s0 --> s1\n  s1 --> finish';
+    const chain = steps.length > 0
+      ? steps.map((_, index) => `  ${index === 0 ? `${prefix}start` : `${prefix}s${index - 1}`} --> ${prefix}s${index}`).join('\n') + `\n  ${prefix}s${steps.length - 1} --> ${prefix}finish`
+      : `  ${prefix}start --> ${prefix}s0\n  ${prefix}s0 --> ${prefix}s1\n  ${prefix}s1 --> ${prefix}finish`;
 
-  const failureStates = asArray<string>(flow.failure_paths)
-    .join(', ')
-    .replace(/\|/g, ', ') || 'Validation error';
+    const failureStates = asArray<string>(flow.failure_paths)
+      .join(', ')
+      .replace(/\|/g, ', ') || 'Validation error';
+
+    return `
+  ${prefix}start((${JSON.stringify(flow.trigger)}))
+${nodes}
+  ${prefix}finish(("${escapeXml(flow.happy_path_end ? toText(flow.happy_path_end) : 'Success')}"))
+${chain}
+  ${prefix}start -.-> ${prefix}error["Failure: ${escapeXml(failureStates)}"]
+`;
+  }).join('\n');
+
+  const crossFlow = flows.length > 1 ? '  f0finish --> f1start' : '';
 
   return `flowchart LR
-  start((${JSON.stringify(flow.trigger)}))
-${nodes}
-  finish((Happy Path))
-${chain}
-  start -.-> error["Failure states: ${escapeXml(failureStates)}"]
+${flowBlocks}
+${crossFlow}
 `;
 }
 
