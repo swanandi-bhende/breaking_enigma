@@ -4,6 +4,7 @@ Produces complete design_spec with screens, API spec, and data models.
 Uses RAG to retrieve relevant research context from Qdrant.
 """
 
+import re
 from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
@@ -27,6 +28,306 @@ from app.schemas.designer import (
     Relationship,
 )
 from app.schemas.research_pm import PRD
+
+
+def _slugify(value: str) -> str:
+  slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+  return slug or "product"
+
+
+def _safe_text(value: Any, fallback: str = "-") -> str:
+  if value is None:
+    return fallback
+  text = str(value).strip()
+  return text if text else fallback
+
+
+def _build_component(name: str, component_type: str, props: Optional[Dict[str, Any]] = None, dependencies: Optional[List[str]] = None) -> Dict[str, Any]:
+  return {
+    "component_name": name,
+    "type": component_type,
+    "props": props or {},
+    "state_dependencies": dependencies or [],
+  }
+
+
+def _build_screen(screen_id: str, screen_name: str, route: str, purpose: str, components: List[Dict[str, Any]], ux_decisions: List[str], edge_cases: List[str], wireframe_description: str) -> Dict[str, Any]:
+  return {
+    "screen_id": screen_id,
+    "screen_name": screen_name,
+    "route": route,
+    "purpose": purpose,
+    "components": components,
+    "ux_decisions": ux_decisions,
+    "edge_cases": edge_cases,
+    "wireframe_description": wireframe_description,
+  }
+
+
+def _build_endpoint(endpoint_id: str, method: str, path: str, description: str, maps_to_user_stories: List[str], auth_required: bool = False) -> Dict[str, Any]:
+  return {
+    "endpoint_id": endpoint_id,
+    "method": method,
+    "path": path,
+    "auth_required": auth_required,
+    "description": description,
+    "request_body": {
+      "content_type": "application/json",
+      "schema_def": {},
+      "validation_rules": ["Validate required fields", "Return a structured validation error on failure"],
+    },
+    "responses": {
+      "200": {
+        "description": "Successful response",
+        "schema_def": {},
+        "example": {},
+      }
+    },
+    "rate_limit": "60 requests/minute",
+    "maps_to_user_stories": maps_to_user_stories,
+  }
+
+
+def _build_data_model(entity_name: str, table_name: str, fields: List[Dict[str, Any]], relationships: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+  return {
+    "entity_name": entity_name,
+    "table_name": table_name,
+    "fields": fields,
+    "relationships": relationships or [],
+  }
+
+
+def _screen_components_for_step(step_name: str, is_primary: bool) -> List[Dict[str, Any]]:
+  return [
+    _build_component("top-nav", "navigation", {"style": "sticky"}, ["app.user"]),
+    _build_component("hero-summary", "display", {"variant": "summary", "title": step_name}, ["page.state"]),
+    _build_component(
+      "primary-action",
+      "form" if is_primary else "display",
+      {"intent": "primary"},
+      ["page.state", "form.errors"],
+    ),
+    _build_component("status-feedback", "feedback", {"style": "inline"}, ["page.loading", "page.error"]),
+  ]
+
+
+def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
+  project_name = _safe_text(prd.product_vision.elevator_pitch, "Product Experience")
+  project_slug = _slugify(project_name)
+
+  user_stories = list(prd.user_stories or [])
+  user_flow = list(prd.user_flow or [])
+  mvp_features = list(prd.features.mvp or [])
+  v11_features = list(prd.features.v1_1 or [])
+  v20_features = list(prd.features.v2_0 or [])
+
+  screens: List[Dict[str, Any]] = []
+  if user_flow:
+    for index, flow_step in enumerate(user_flow[:5]):
+      step_slug = _slugify(flow_step.screen_name)
+      screens.append(
+        _build_screen(
+          screen_id=f"screen-{step_slug}",
+          screen_name=flow_step.screen_name,
+          route="/" if index == 0 else f"/{step_slug}",
+          purpose=f"Support step {flow_step.step}: {flow_step.user_action}",
+          components=_screen_components_for_step(flow_step.screen_name, index == 0),
+          ux_decisions=[
+            "Keep the primary action visible above the fold",
+            "Use progressive disclosure for secondary details",
+            "Show inline validation and status feedback",
+          ],
+          edge_cases=[
+            "Loading state while data is fetched",
+            "Validation errors on submission",
+            "Empty state when there is no saved data",
+          ],
+          wireframe_description=(
+            f"Header with navigation, a focused content card for {flow_step.screen_name}, "
+            f"primary action area, and a feedback strip for success or error states."
+          ),
+        )
+      )
+  else:
+    screens.append(
+      _build_screen(
+        screen_id="screen-home",
+        screen_name="Home",
+        route="/",
+        purpose="Introduce the experience and guide the user into the primary workflow.",
+        components=_screen_components_for_step(project_name, True),
+        ux_decisions=[
+          "Keep onboarding lightweight",
+          "Highlight the single primary call to action",
+          "Use a clean mobile-first layout",
+        ],
+        edge_cases=["No data available", "API load failure", "User has not completed onboarding"],
+        wireframe_description="Top navigation, hero summary block, action cards, and a compact feedback banner.",
+      )
+    )
+
+  if mvp_features:
+    primary_feature = mvp_features[0]
+    screens.append(
+      _build_screen(
+        screen_id=f"screen-{_slugify(primary_feature.name)}",
+        screen_name=primary_feature.name,
+        route=f"/{_slugify(primary_feature.name)}",
+        purpose=primary_feature.description,
+        components=[
+          _build_component("section-header", "layout", {"title": primary_feature.name}, ["feature.state"]),
+          _build_component("feature-card-grid", "display", {"cards": "primary"}, ["feature.items"]),
+          _build_component("primary-cta", "form", {"label": "Continue"}, ["feature.form"]),
+        ],
+        ux_decisions=["Prioritize task completion over decorative elements", "Keep actions one click away"],
+        edge_cases=["No items returned", "User input is incomplete"],
+        wireframe_description=f"Section header followed by a structured feature card grid for {primary_feature.name}.",
+      )
+    )
+
+  interaction_steps = [
+    f"Step {step.step}: {step.screen_name} - {step.user_action}"
+    for step in user_flow[:5]
+  ] or [
+    "Open the home screen",
+    "Review the primary action area",
+    "Submit or continue the workflow",
+    "Confirm success and surface the next best action",
+  ]
+
+  api_spec = [
+    _build_endpoint(
+      endpoint_id="api-projects-list",
+      method="GET",
+      path="/api/v1/projects",
+      description="List all saved projects for the current user.",
+      maps_to_user_stories=[story.id for story in user_stories[:2]],
+      auth_required=True,
+    ),
+    _build_endpoint(
+      endpoint_id="api-projects-create",
+      method="POST",
+      path="/api/v1/projects",
+      description="Create a new project from the primary workflow.",
+      maps_to_user_stories=[story.id for story in user_stories[:3]],
+      auth_required=True,
+    ),
+    _build_endpoint(
+      endpoint_id="api-projects-detail",
+      method="GET",
+      path="/api/v1/projects/{project_id}",
+      description="Return project details, state, and related items.",
+      maps_to_user_stories=[story.id for story in user_stories[:3]],
+      auth_required=True,
+    ),
+  ]
+
+  if v11_features:
+    api_spec.append(
+      _build_endpoint(
+        endpoint_id="api-projects-update",
+        method="PATCH",
+        path="/api/v1/projects/{project_id}",
+        description="Update a project draft or saved configuration.",
+        maps_to_user_stories=[story.id for story in user_stories[1:4]],
+        auth_required=True,
+      )
+    )
+
+  if v20_features:
+    api_spec.append(
+      _build_endpoint(
+        endpoint_id="api-projects-archive",
+        method="DELETE",
+        path="/api/v1/projects/{project_id}",
+        description="Archive or remove a completed project.",
+        maps_to_user_stories=[story.id for story in user_stories[-2:]],
+        auth_required=True,
+      )
+    )
+
+  data_models = [
+    _build_data_model(
+      "User",
+      "users",
+      [
+        {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+        {"name": "email", "type": "text", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+        {"name": "name", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+        {"name": "created_at", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "now()"},
+      ],
+      [{"type": "one-to-many", "with_entity": "Project", "foreign_key": "user_id"}],
+    ),
+    _build_data_model(
+      "Project",
+      "projects",
+      [
+        {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+        {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+        {"name": "title", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+        {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "draft"},
+        {"name": "created_at", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "now()"},
+      ],
+      [
+        {"type": "one-to-many", "with_entity": "Task", "foreign_key": "project_id"},
+      ],
+    ),
+    _build_data_model(
+      "Task",
+      "tasks",
+      [
+        {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+        {"name": "project_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "projects.id", "default": None},
+        {"name": "title", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+        {"name": "description", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+        {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "todo"},
+        {"name": "priority", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "medium"},
+      ],
+      [],
+    ),
+  ]
+
+  design_spec = DesignSpec(
+    screens=screens,
+    interaction_flows=[
+      InteractionFlow(
+        flow_id="flow-primary",
+        flow_name=f"Primary workflow for {project_name}",
+        trigger="User opens the product and starts the main task",
+        steps=interaction_steps,
+        happy_path_end="User completes the core task and sees a confirmation state",
+        failure_paths=["Validation error", "Network timeout", "Empty results state"],
+      ),
+      InteractionFlow(
+        flow_id="flow-recovery",
+        flow_name="Error and recovery flow",
+        trigger="An action fails or returns incomplete data",
+        steps=[
+          "Show inline error feedback",
+          "Preserve user input",
+          "Offer retry and back navigation",
+        ],
+        happy_path_end="User retries successfully and resumes the main workflow",
+        failure_paths=["Repeated API failure", "Invalid input format"],
+      ),
+    ],
+    system_architecture=SystemArchitecture(
+      frontend="Next.js client with reusable screen components and document-style previews",
+      backend="FastAPI service orchestrating agents and product APIs",
+      database="PostgreSQL for durable application data and workflow state",
+      cache="Redis for events, queues, and short-lived state",
+      external_services=["Qdrant for retrieval context", "LLM provider configured in environment"],
+      communication_patterns={
+        "client_to_api": "REST/JSON",
+        "realtime_updates": "WebSocket events for pipeline and live state",
+        "background_jobs": "Celery workers with Redis broker",
+      },
+    ),
+    api_spec=api_spec,
+    data_models=data_models,
+  )
+
+  return design_spec.model_dump(mode="json")
 
 
 DESIGNER_SYSTEM_PROMPT = """You are the Designer Agent in an autonomous product development system.
@@ -163,11 +464,15 @@ class DesignerAgent:
     """Designer Agent for design specification generation."""
 
     def __init__(self):
+        api_key = settings.GEMINI_API_KEY or settings.OPENAI_API_KEY
+        base_url = settings.GEMINI_BASE_URL if settings.GEMINI_API_KEY else settings.OPENAI_BASE_URL
+        model = settings.GEMINI_MODEL if settings.GEMINI_API_KEY else settings.OPENAI_MODEL
+
         self.llm = ChatOpenAI(
-            model=settings.OPENAI_MODEL,
+            model=model,
             temperature=0.3,
-            api_key=settings.OPENAI_API_KEY,
-          base_url=settings.OPENAI_BASE_URL,
+            api_key=api_key,
+            base_url=base_url,
         )
         self.parser = PydanticOutputParser(pydantic_object=DesignSpec)
         self.max_retries = 3
@@ -313,135 +618,20 @@ Now create the complete design specification.
 
 
 async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) -> Dict[str, Any]:
-  """Main entry point for Designer Agent.
+    """Main entry point for Designer Agent.
 
-  Uses a deterministic design spec for pipeline reliability in development
-  mode, avoiding long LLM calls and JSON-format drift.
-  """
-  if isinstance(input_data, dict):
-    input_data = DesignerAgentInput.model_validate(input_data)
+    The design spec is derived from the PRD so the UI can render a readable
+    document while downstream agents still receive structured JSON.
+    """
+    if isinstance(input_data, dict):
+        input_data = DesignerAgentInput.model_validate(input_data)
 
-  run_id = str(input_data.run_id)
+    run_id = str(input_data.run_id)
+    prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
 
-  return {
-    "run_id": run_id,
-    "design_spec": {
-      "screens": [
-        {
-          "screen_id": "screen-home",
-          "screen_name": "Home Dashboard",
-          "route": "/",
-          "purpose": "Show class schedule, booking shortcuts, and membership summary.",
-          "components": [
-            {
-              "component_name": "top-nav",
-              "type": "navigation",
-              "props": {},
-              "state_dependencies": ["auth.user"],
-            },
-            {
-              "component_name": "class-list",
-              "type": "display",
-              "props": {"layout": "cards"},
-              "state_dependencies": ["classes", "bookings"],
-            },
-          ],
-          "ux_decisions": ["Mobile-first booking flow"],
-          "edge_cases": ["No upcoming classes", "Expired membership"],
-          "wireframe_description": "Header with membership status, class cards, and primary CTA to book.",
-        }
-      ],
-      "interaction_flows": [
-        {
-          "flow_id": "flow-book-class",
-          "flow_name": "Book Class",
-          "trigger": "Member taps Book on a class card",
-          "steps": [
-            "Open class details",
-            "Confirm booking",
-            "Persist booking",
-            "Show success state",
-          ],
-          "happy_path_end": "Booking appears in member schedule",
-          "failure_paths": ["Class full", "Membership inactive"],
-        }
-      ],
-      "system_architecture": {
-        "frontend": "Next.js web app",
-        "backend": "FastAPI service with Celery worker",
-        "database": "PostgreSQL",
-        "cache": "Redis",
-        "external_services": ["Groq OpenAI-compatible API"],
-        "communication_patterns": {
-          "client_to_api": "REST",
-          "realtime_updates": "WebSocket",
-        },
-      },
-      "api_spec": [
-        {
-          "endpoint_id": "api-runs-create",
-          "method": "POST",
-          "path": "/api/v1/runs",
-          "auth_required": False,
-          "description": "Create and enqueue a new pipeline run.",
-          "request_body": {
-            "content_type": "application/json",
-            "schema": {
-              "type": "object",
-              "properties": {
-                "idea": {"type": "string"},
-                "config": {"type": "object"},
-              },
-              "required": ["idea"],
-            },
-            "validation_rules": ["idea must be at least 10 characters"],
-          },
-          "responses": {
-            "202": {
-              "description": "Run accepted",
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "run_id": {"type": "string"},
-                  "task_id": {"type": "string"},
-                },
-              },
-              "example": {
-                "run_id": "uuid",
-                "task_id": "pipeline-uuid",
-              },
-            }
-          },
-          "rate_limit": None,
-          "maps_to_user_stories": ["US-BOOK-CLASS-001"],
-        }
-      ],
-      "data_models": [
-        {
-          "entity_name": "Member",
-          "table_name": "members",
-          "fields": [
-            {
-              "name": "id",
-              "type": "uuid",
-              "nullable": False,
-              "unique": True,
-              "indexed": True,
-              "foreign_key": None,
-              "default": None,
-            },
-            {
-              "name": "email",
-              "type": "text",
-              "nullable": False,
-              "unique": True,
-              "indexed": True,
-              "foreign_key": None,
-              "default": None,
-            },
-          ],
-          "relationships": [],
-        }
-      ],
-    },
-  }
+    design_spec = _build_design_spec_from_prd(prd)
+
+    return {
+        "run_id": run_id,
+        "design_spec": design_spec,
+    }

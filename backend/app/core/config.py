@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "llama-3.1-8b-instant"
     OPENAI_BASE_URL: str = "https://api.groq.com/openai/v1"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
     # ── Application ─────────────────────────────────────────────────────────
     SECRET_KEY: str = "change-me-in-production-32-chars!!"
