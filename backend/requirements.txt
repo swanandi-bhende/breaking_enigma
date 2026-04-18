@@ -27,6 +27,7 @@ tiktoken==0.7.0
 # ── Utilities ──────────────────────────────────────────────────────────────────
 python-dotenv==1.0.1
 httpx==0.27.0
+beautifulsoup4==4.12.3
 json-repair==0.25.2       # Fallback for malformed LLM JSON output
 
 # ── Testing ─────────────────────────────────────────────────────────────────────

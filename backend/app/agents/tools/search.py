@@ -76,7 +76,7 @@ def serp_api_search(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
             "output": "json",
         }
         response = requests.get(
-            "https:// serpapi.com/search", params=params, timeout=15
+            "https://serpapi.com/search", params=params, timeout=15
         )
 
         if response.status_code != 200:

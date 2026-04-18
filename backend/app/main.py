@@ -79,6 +79,7 @@ app.add_middleware(
 # ════════════════════════════════════════════════════════════════════════════
 
 @app.get("/health", tags=["Infrastructure"])
+@app.get("/api/v1/health", tags=["Infrastructure"])
 async def health() -> Dict[str, str]:
     return {"status": "ok"}
 

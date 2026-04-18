@@ -33,6 +33,8 @@ from app.schemas.agents import (
 )
 from app.workflow.qa_scoring import determine_qa_verdict
 
+from app.schemas.agents import QAAgentInput
+
 logger = logging.getLogger(__name__)
 
 QA_SYSTEM_PROMPT = """\

@@ -24,6 +24,8 @@ from app.schemas.agents import (
     EnvVariable,
 )
 
+from app.schemas.agents import DevOpsAgentInput
+
 logger = logging.getLogger(__name__)
 
 DEVOPS_SYSTEM_PROMPT = """\

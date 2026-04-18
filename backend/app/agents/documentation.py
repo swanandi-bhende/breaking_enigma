@@ -21,6 +21,8 @@ from app.schemas.agents import (
     DocumentationAgentOutput,
 )
 
+from app.schemas.agents import DocumentationAgentInput
+
 logger = logging.getLogger(__name__)
 
 

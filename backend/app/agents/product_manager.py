@@ -182,12 +182,11 @@ Now create a comprehensive PRD based on this research.
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                chain = (
-                    ChatPromptTemplate.from_messages(
-                        [("system", PM_SYSTEM_PROMPT), ("human", "{input}")]
-                    )
-                    | self.llm
-                    | self.parser
+                response = await self.llm.ainvoke(
+                    [
+                        ("system", PM_SYSTEM_PROMPT),
+                        ("human", prompt),
+                    ]
                 )
 
                 try:

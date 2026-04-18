@@ -154,12 +154,11 @@ Focus on realistic estimates and actionable insights.
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                chain = (
-                    ChatPromptTemplate.from_messages(
-                        [("system", RESEARCH_SYSTEM_PROMPT), ("human", "{input}")]
-                    )
-                    | self.llm
-                    | self.parser
+                response = await self.llm.ainvoke(
+                    [
+                        ("system", RESEARCH_SYSTEM_PROMPT),
+                        ("human", prompt),
+                    ]
                 )
 
                 try:

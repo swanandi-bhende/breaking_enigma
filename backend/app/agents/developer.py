@@ -26,6 +26,8 @@ from app.schemas.agents import (
     SkippedFeature,
 )
 
+from app.schemas.agents import DeveloperAgentInput
+
 logger = logging.getLogger(__name__)
 
 # ── System prompts ────────────────────────────────────────────────────────────
