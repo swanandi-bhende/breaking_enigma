@@ -218,41 +218,111 @@ function buildFlowMermaid(payload: DesignerPayload): string {
     ? steps.map((_, index) => `  ${index === 0 ? 'start' : `s${index - 1}`} --> s${index}`).join('\n') + `\n  s${steps.length - 1} --> finish`
     : '  start --> s0\n  s0 --> s1\n  s1 --> finish';
 
+  const failureStates = asArray<string>(flow.failure_paths)
+    .join(', ')
+    .replace(/\|/g, ', ') || 'Validation error';
+
   return `flowchart LR
   start((${JSON.stringify(flow.trigger)}))
 ${nodes}
   finish((Happy Path))
 ${chain}
-  start -.-> error["Failure states: ${JSON.stringify(asArray<string>(flow.failure_paths).join(' | ') || 'Validation error')}"]
+  start -.-> error["Failure states: ${escapeXml(failureStates)}"]
 `;
 }
 
 function buildWireframeSvg(payload: DesignerPayload): string {
   const screens = asArray<ScreenSpec>(payload.screens).slice(0, 4);
-  const width = 1280;
-  const cardWidth = 280;
-  const cardHeight = 320;
+  const width = 1440;
+  const cardWidth = 320;
+  const cardHeight = 420;
   const gap = 24;
   const margin = 32;
-  const height = 420;
+  const height = 560;
   const totalWidth = margin * 2 + screens.length * cardWidth + Math.max(0, screens.length - 1) * gap;
 
-  const cards = screens.map((screen, index) => {
+  const componentNames = (screen: ScreenSpec): string[] => asArray<ScreenComponent>(screen.components).map((component) => component.component_name);
+
+  const renderComponentPills = (x: number, y: number, screen: ScreenSpec): string => {
+    const names = componentNames(screen).slice(0, 4);
+    if (names.length === 0) {
+      return `<rect x="${x}" y="${y}" width="90" height="22" rx="11" fill="#1A1A24" stroke="#2A2A3A" /><text x="${x + 45}" y="${y + 15}" text-anchor="middle" fill="#8888AA" font-size="10" font-family="sans-serif">Core UI</text>`;
+    }
+
+    return names.map((name, index) => {
+      const pillX = x + index * 72;
+      return `<rect x="${pillX}" y="${y}" width="64" height="22" rx="11" fill="#1A1A24" stroke="#2A2A3A" /><text x="${pillX + 32}" y="${y + 15}" text-anchor="middle" fill="#F0F0F8" font-size="9" font-family="sans-serif">${escapeXml(name.slice(0, 10))}</text>`;
+    }).join('');
+  };
+
+  const renderInputField = (x: number, y: number, widthValue: number, label: string): string => {
+    return `<rect x="${x}" y="${y}" width="${widthValue}" height="34" rx="8" fill="#111118" stroke="#2A2A3A" /><text x="${x + 12}" y="${y + 22}" fill="#8888AA" font-size="10" font-family="sans-serif">${escapeXml(label)}</text>`;
+  };
+
+  const renderScreenWireframe = (screen: ScreenSpec, index: number): string => {
     const x = margin + index * (cardWidth + gap);
-    const header = `<rect x="${x}" y="${margin}" width="${cardWidth}" height="${cardHeight}" rx="18" fill="#111118" stroke="#2A2A3A" />`;
-    const title = `<text x="${x + 18}" y="${margin + 32}" fill="#F0F0F8" font-size="18" font-family="sans-serif" font-weight="700">${escapeXml(screen.screen_name)}</text>`;
-    const subtitle = `<text x="${x + 18}" y="${margin + 54}" fill="#8888AA" font-size="12" font-family="sans-serif">${escapeXml(screen.route)}</text>`;
-    const purposeLines = wrapText(toText(screen.purpose), 34).slice(0, 3);
-    const purpose = purposeLines.map((line, lineIndex) => `<text x="${x + 18}" y="${margin + 86 + lineIndex * 18}" fill="#F0F0F8" font-size="12" font-family="sans-serif">${escapeXml(line)}</text>`).join('');
+    const screenTitle = escapeXml(screen.screen_name);
+    const routeLabel = escapeXml(screen.route);
+    const purposeLines = wrapText(toText(screen.purpose), 30).slice(0, 3);
+    const components = asArray<ScreenComponent>(screen.components);
+    const hasForm = components.some((component) => component.type === 'form');
+    const hasNavigation = components.some((component) => component.type === 'navigation');
+    const hasDisplay = components.some((component) => component.type === 'display');
+    const hasFeedback = components.some((component) => component.type === 'feedback');
 
-    const topBar = `<rect x="${x + 18}" y="${margin + 118}" width="${cardWidth - 36}" height="28" rx="8" fill="#1A1A24" stroke="#2A2A3A" />`;
-    const mainPanel = `<rect x="${x + 18}" y="${margin + 160}" width="${cardWidth - 36}" height="92" rx="12" fill="#0A0A0F" stroke="#00FF8855" />`;
-    const cta = `<rect x="${x + 18}" y="${margin + 268}" width="${cardWidth - 36}" height="28" rx="14" fill="#00FF88" />`;
-    const ctaText = `<text x="${x + cardWidth / 2}" y="${margin + 287}" text-anchor="middle" fill="#0A0A0F" font-size="11" font-family="sans-serif" font-weight="700">Primary CTA</text>`;
-    const label = `<text x="${x + cardWidth / 2}" y="${margin + cardHeight + 26}" text-anchor="middle" fill="#8888AA" font-size="12" font-family="sans-serif">${screen.screen_id}</text>`;
+    const frame = `<rect x="${x}" y="${margin}" width="${cardWidth}" height="${cardHeight}" rx="20" fill="#111118" stroke="#2A2A3A" stroke-width="1.5" />`;
+    const bezel = `<rect x="${x + 10}" y="${margin + 10}" width="${cardWidth - 20}" height="${cardHeight - 20}" rx="16" fill="#0A0A0F" stroke="#1A1A24" />`;
+    const topBar = `<rect x="${x + 22}" y="${margin + 24}" width="${cardWidth - 44}" height="34" rx="10" fill="#1A1A24" stroke="#2A2A3A" />`;
+    const topDots = `<circle cx="${x + 38}" cy="${margin + 41}" r="4" fill="#00FF88" /><circle cx="${x + 54}" cy="${margin + 41}" r="4" fill="#8888AA" /><circle cx="${x + 70}" cy="${margin + 41}" r="4" fill="#8888AA" />`;
+    const title = `<text x="${x + 92}" y="${margin + 44}" fill="#F0F0F8" font-size="16" font-family="sans-serif" font-weight="700">${screenTitle}</text>`;
+    const route = `<text x="${x + 22}" y="${margin + 82}" fill="#8888AA" font-size="11" font-family="sans-serif">${routeLabel}</text>`;
 
-    return `${header}${title}${subtitle}${purpose}${topBar}${mainPanel}${cta}${ctaText}${label}`;
-  }).join('');
+    const heroY = margin + 102;
+    const hero = `<rect x="${x + 22}" y="${heroY}" width="${cardWidth - 44}" height="74" rx="14" fill="#0F1118" stroke="#2A2A3A" />`;
+    const heroTitle = `<text x="${x + 36}" y="${heroY + 24}" fill="#F0F0F8" font-size="13" font-family="sans-serif" font-weight="700">Primary Experience</text>`;
+    const heroText = purposeLines.map((line, lineIndex) => `<text x="${x + 36}" y="${heroY + 43 + lineIndex * 15}" fill="#F0F0F8" font-size="10" font-family="sans-serif">${escapeXml(line)}</text>`).join('');
+
+    const contentY = margin + 192;
+    const contentLeft = `<rect x="${x + 22}" y="${contentY}" width="${cardWidth - 108}" height="120" rx="14" fill="#0A0A0F" stroke="#00FF8855" />`;
+    const contentRight = `<rect x="${x + cardWidth - 78}" y="${contentY}" width="56" height="120" rx="14" fill="#111118" stroke="#2A2A3A" />`;
+    const contentTitle = `<text x="${x + 36}" y="${contentY + 22}" fill="#F0F0F8" font-size="11" font-family="sans-serif" font-weight="700">${hasForm ? 'Form / Inputs' : hasDisplay ? 'Data Cards' : 'Content Area'}</text>`;
+
+    const bodyBlocks = hasForm
+      ? [
+          renderInputField(x + 36, contentY + 32, cardWidth - 136, 'Search / title'),
+          renderInputField(x + 36, contentY + 74, cardWidth - 136, 'Primary input'),
+        ].join('')
+      : hasDisplay
+        ? [
+            `<rect x="${x + 36}" y="${contentY + 32}" width="${cardWidth - 136}" height="26" rx="8" fill="#1A1A24" />`,
+            `<rect x="${x + 36}" y="${contentY + 66}" width="${cardWidth - 136}" height="26" rx="8" fill="#1A1A24" />`,
+            `<rect x="${x + 36}" y="${contentY + 100}" width="${cardWidth - 136}" height="26" rx="8" fill="#1A1A24" />`,
+          ].join('')
+        : [
+            `<rect x="${x + 36}" y="${contentY + 32}" width="${cardWidth - 136}" height="34" rx="8" fill="#1A1A24" />`,
+            `<rect x="${x + 36}" y="${contentY + 78}" width="${cardWidth - 136}" height="34" rx="8" fill="#1A1A24" />`,
+          ].join('');
+
+    const sidebar = `
+      <rect x="${x + cardWidth - 74}" y="${contentY + 10}" width="40" height="22" rx="8" fill="#1A1A24" />
+      <rect x="${x + cardWidth - 74}" y="${contentY + 40}" width="40" height="22" rx="8" fill="#1A1A24" />
+      <rect x="${x + cardWidth - 74}" y="${contentY + 70}" width="40" height="22" rx="8" fill="#1A1A24" />
+    `;
+
+    const ctaY = margin + 332;
+    const cta = `<rect x="${x + 22}" y="${ctaY}" width="${cardWidth - 44}" height="30" rx="15" fill="#00FF88" />`;
+    const ctaText = `<text x="${x + cardWidth / 2}" y="${ctaY + 20}" text-anchor="middle" fill="#0A0A0F" font-size="11" font-family="sans-serif" font-weight="700">Primary CTA</text>`;
+    const helperText = hasNavigation
+      ? 'Navigation-first layout + actions'
+      : hasFeedback
+        ? 'Inline validation + status'
+        : 'Structured content + actions';
+    const helper = `<text x="${x + 22}" y="${margin + cardHeight - 24}" fill="#8888AA" font-size="10" font-family="sans-serif">${helperText}</text>`;
+
+    return `${frame}${bezel}${topBar}${topDots}${title}${route}${renderComponentPills(x + 22, margin + 70, screen)}${hero}${heroTitle}${heroText}${contentLeft}${contentRight}${contentTitle}${bodyBlocks}${sidebar}${cta}${ctaText}${helper}`;
+  };
+
+  const cards = screens.map((screen, index) => renderScreenWireframe(screen, index)).join('');
 
   const background = `<rect width="${Math.max(width, totalWidth)}" height="${height}" fill="#0A0A0F" />`;
   const heading = `<text x="32" y="28" fill="#F0F0F8" font-size="20" font-family="sans-serif" font-weight="700">UI Wireframes</text>`;
