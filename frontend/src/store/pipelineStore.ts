@@ -38,7 +38,6 @@ const initialAgentStatuses: Record<string, AgentStatus> = {
   designer: 'PENDING',
   developer: 'PENDING',
   qa: 'PENDING',
-  devops: 'PENDING',
   docs: 'PENDING',
 };
 

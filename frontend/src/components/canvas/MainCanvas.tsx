@@ -10,7 +10,6 @@ const AGENT_META: Record<string, { label: string, colorVar: string }> = {
   designer: { label: 'Designer', colorVar: '--agent-designer' },
   developer: { label: 'Developer', colorVar: '--agent-developer' },
   qa: { label: 'QA', colorVar: '--agent-qa' },
-  devops: { label: 'DevOps', colorVar: '--agent-devops' },
   docs: { label: 'Documentation', colorVar: '--agent-docs' },
 };
 

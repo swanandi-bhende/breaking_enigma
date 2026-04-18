@@ -75,7 +75,7 @@ class TestInitialState:
         assert state["project_brief"] is None
 
     def test_all_agents_start_pending(self, base_state):
-        for agent in ["research", "product_manager", "designer", "developer", "qa", "devops", "documentation"]:
+        for agent in ["research", "product_manager", "designer", "developer", "qa", "documentation"]:
             assert base_state["phases"][agent]["status"] == "PENDING"
 
     def test_config_defaults(self, base_state):

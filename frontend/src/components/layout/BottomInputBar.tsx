@@ -71,7 +71,7 @@ export default function BottomInputBar() {
           value={idea}
           onChange={(e) => setIdea(e.target.value)}
           placeholder="Describe your product idea..."
-          className="w-full bg-bg-base border border-border rounded-lg py-3 px-4 text-text-primary focus:outline-none focus:border-accent transition-colors shadow-inner"
+          className="w-full bg-white border border-border rounded-lg py-3 px-4 text-slate-900 placeholder:text-slate-500 caret-slate-900 focus:outline-none focus:border-accent transition-colors shadow-inner"
           disabled={isRunning}
         />
       </div>

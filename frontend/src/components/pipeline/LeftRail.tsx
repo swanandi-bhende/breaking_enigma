@@ -12,7 +12,6 @@ const AGENTS = [
 ];
 
 const PARALLEL_AGENTS = [
-  { id: 'devops', label: 'DevOps', colorVar: '--agent-devops' },
   { id: 'docs', label: 'Documentation', colorVar: '--agent-docs' },
 ];
 

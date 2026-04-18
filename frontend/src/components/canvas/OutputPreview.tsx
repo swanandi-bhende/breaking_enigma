@@ -174,8 +174,6 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
         return globalState?.developer_output;
       case 'qa':
         return globalState?.qa_output;
-      case 'devops':
-        return globalState?.devops_output;
       case 'docs':
         return globalState?.docs_output;
       default:
@@ -236,19 +234,6 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
               </pre>
             ) : (
               <p className="text-text-secondary italic">Waiting for QA results...</p>
-            )}
-          </div>
-        );
-      case 'devops':
-        return (
-          <div className="bg-surface border border-border rounded-lg p-6">
-            <h3 className="text-lg font-bold text-[var(--agent-devops)] mb-4">DevOps & Deployment</h3>
-            {payload ? (
-              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap">
-                {JSON.stringify(payload, null, 2)}
-              </pre>
-            ) : (
-              <p className="text-text-secondary italic">Waiting for DevOps output...</p>
             )}
           </div>
         );

@@ -5,7 +5,7 @@ Defines:
   - All agent nodes (thin wrappers that call agent_executor)
   - Linear flow: research → pm → designer → developer → qa
   - Conditional routing after QA (PASS / FAIL / human_review)
-  - Parallel final stage (DevOps + Documentation via asyncio.gather)
+    - Final stage: Documentation
   - Human checkpoint support at any configured stage
 
 Owned by: Nisarg (Workflow Engine & Agent Orchestration)
@@ -13,7 +13,6 @@ Owned by: Nisarg (Workflow Engine & Agent Orchestration)
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, Dict
 
@@ -62,7 +61,6 @@ _run_pm = _load_agent("app.agents.product_manager", "run_pm_agent")
 _run_designer = _load_agent("app.agents.designer", "run_designer_agent")
 _run_developer = _load_agent("app.agents.developer", "run_developer_agent")
 _run_qa = _load_agent("app.agents.qa", "run_qa_agent")
-_run_devops = _load_agent("app.agents.devops", "run_devops_agent")
 _run_documentation = _load_agent("app.agents.documentation", "run_documentation_agent")
 
 
@@ -200,42 +198,23 @@ async def node_qa(state: PipelineState) -> PipelineState:
 
 async def node_parallel_final(state: PipelineState) -> PipelineState:
     """
-    Run DevOps and Documentation agents in parallel via asyncio.gather.
-    Neither depends on the other so there is no ordering constraint.
+    Run Documentation as the final stage after QA passes.
     """
     run_id = state["run_id"]
     logger.info("[graph] Starting parallel final stage for run_id=%s", run_id)
 
-    devops_task = asyncio.create_task(
-        agent_executor("devops", _run_devops, state, iteration=1)
-    )
-    docs_task = asyncio.create_task(
-        agent_executor("documentation", _run_documentation, state, iteration=1)
-    )
-
-    results = await asyncio.gather(devops_task, docs_task, return_exceptions=True)
-    devops_result, docs_result = results
-
-    # Handle failures gracefully — one failing shouldn't kill the other
-    if isinstance(devops_result, Exception):
-        logger.error("[graph] DevOps agent failed in parallel stage: %s", devops_result)
-        state["phases"]["devops"]["status"] = "FAILED"
-        state["phases"]["devops"]["error"] = str(devops_result)
-        devops_result = None
-    else:
-        state["phases"]["devops"]["status"] = "COMPLETE"
-
-    if isinstance(docs_result, Exception):
-        logger.error("[graph] Documentation agent failed in parallel stage: %s", docs_result)
+    try:
+        docs_result = await agent_executor("documentation", _run_documentation, state, iteration=1)
+    except Exception as docs_error:
+        logger.error("[graph] Documentation agent failed in final stage: %s", docs_error)
         state["phases"]["documentation"]["status"] = "FAILED"
-        state["phases"]["documentation"]["error"] = str(docs_result)
+        state["phases"]["documentation"]["error"] = str(docs_error)
         docs_result = None
     else:
         state["phases"]["documentation"]["status"] = "COMPLETE"
 
     state = {
         **state,
-        "devops_output": devops_result,
         "docs_output": docs_result,
         "run_state": "COMPLETE",
     }

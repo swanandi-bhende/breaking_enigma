@@ -414,7 +414,7 @@ def _extract_input(agent_name: str, state: PipelineState) -> Dict[str, Any]:
             "design_spec": state["design_spec"],
             "developer_output": state["developer_output"],
             "qa_output": state["qa_output"],
-            "devops_output": state["devops_output"],
+            "devops_output": None,
         }
 
     raise ValueError(f"No input extractor defined for agent '{agent_name}'.")
