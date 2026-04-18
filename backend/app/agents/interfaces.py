@@ -151,7 +151,7 @@ class AgentHub:
             Dict containing all agent outputs
         """
         research_input = ResearchAgentInput(
-            run_id=run_id, project_brief=project_brief, tools_available=["web_search"]
+            run_id=str(run_id), project_brief=project_brief, tools_available=["web_search"]
         )
 
         research_output = await self.research_agent(research_input)

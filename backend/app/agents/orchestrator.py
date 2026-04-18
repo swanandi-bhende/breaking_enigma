@@ -65,7 +65,10 @@ async def _normalise_idea(
     Call the LLM to turn the raw idea into a structured ProjectBrief dict.
     Retries up to 3 times on malformed JSON.
     """
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    client = AsyncOpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+    )
     user_prompt = f'Product idea: "{idea}"\nHint — target platform: {target_platform_hint}'
 
     for attempt in range(1, 4):
@@ -76,7 +79,6 @@ async def _normalise_idea(
                 {"role": "user", "content": user_prompt},
             ],
             temperature=0.2,
-            response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or "{}"
         try:
@@ -112,7 +114,7 @@ async def _init_pipeline_run(run_id: str, state: PipelineState) -> None:
         from app.core.database import create_pipeline_run  # type: ignore[import]
 
         await create_pipeline_run(
-            run_id=run_id,
+            run_id=str(run_id),
             idea=state["idea"],
             config=state["config"],
             user_id=state.get("user_id"),
@@ -126,7 +128,7 @@ async def _update_global_state(run_id: str, state: PipelineState) -> None:
     try:
         from app.core.database import upsert_global_state  # type: ignore[import]
 
-        await upsert_global_state(run_id=run_id, state=dict(state))
+        await upsert_global_state(run_id=str(run_id), state=dict(state))
     except ImportError:
         logger.warning("[orchestrator] database.upsert_global_state not available — skipping")
 
@@ -158,7 +160,7 @@ async def run_orchestrator(
     logger.info("[orchestrator] Initialising pipeline run_id=%s", run_id)
 
     # 1. Build initial state
-    state = initial_state(run_id=run_id, idea=idea, config=config, user_id=user_id)
+    state = initial_state(run_id=str(run_id), idea=idea, config=config, user_id=user_id)
 
     # 2. Validate orchestrator input
     OrchestratorInput(

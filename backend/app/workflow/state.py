@@ -26,7 +26,7 @@ class PipelineState(TypedDict):
       - max_qa_iterations (int, default 3)
       - skip_agents (list[str])
       - human_checkpoints (list[str])
-      - llm_model (str, default 'gpt-4o')
+      - llm_model (str, default 'llama-3.3-70b-versatile')
       - target_platform (str: 'web' | 'mobile' | 'api-only')
     """
 
@@ -115,7 +115,7 @@ def initial_state(
             "max_qa_iterations": cfg.get("max_qa_iterations", 3),
             "skip_agents": cfg.get("skip_agents", []),
             "human_checkpoints": cfg.get("human_checkpoints", []),
-            "llm_model": cfg.get("llm_model", "gpt-4o"),
+            "llm_model": cfg.get("llm_model", "llama-3.3-70b-versatile"),
             "target_platform": cfg.get("target_platform", "web"),
         },
         project_brief=None,

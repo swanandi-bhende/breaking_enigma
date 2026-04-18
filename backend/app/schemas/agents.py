@@ -61,7 +61,7 @@ class OrchestratorConfig(BaseModel):
     max_qa_iterations: int = Field(default=3, ge=1, le=10)
     skip_agents: List[str] = Field(default_factory=list)
     human_checkpoints: List[str] = Field(default_factory=list)
-    llm_model: str = "gpt-4o"
+    llm_model: str = "llama-3.3-70b-versatile"
     target_platform: TargetPlatform = TargetPlatform.WEB
 
 
@@ -333,7 +333,7 @@ class SystemArchitecture(BaseModel):
     frontend: str
     backend: str
     database: str
-    cache: str
+    cache: Optional[str] = None
     external_services: List[str] = Field(default_factory=list)
     communication_patterns: Dict[str, str] = Field(default_factory=dict)
 
@@ -387,6 +387,7 @@ class DBField(BaseModel):
 class RelationType(str, Enum):
     ONE_TO_ONE = "one-to-one"
     ONE_TO_MANY = "one-to-many"
+    MANY_TO_ONE = "many-to-one"
     MANY_TO_MANY = "many-to-many"
 
 

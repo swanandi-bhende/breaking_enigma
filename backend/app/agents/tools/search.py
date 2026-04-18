@@ -2,7 +2,7 @@ from langchain_core.tools import tool
 from typing import List, Dict, Any, Optional
 import requests
 from bs4 import BeautifulSoup
-from ....core.config import settings
+from app.core.config import settings
 
 
 @tool

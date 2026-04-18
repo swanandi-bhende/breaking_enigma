@@ -29,26 +29,43 @@ logger = logging.getLogger(__name__)
 # ── Singleton pool ──────────────────────────────────────────────────────────
 
 _redis_pool: Optional[Redis] = None
+_redis_loop_id: Optional[int] = None  # track which event loop the pool belongs to
 
 
 async def get_redis() -> Redis:
-    """Return (and lazily create) the shared async Redis connection pool."""
-    global _redis_pool
-    if _redis_pool is None:
+    """Return (and lazily create) the shared async Redis connection pool.
+    
+    Creates a new pool if the current event loop has changed (e.g. inside
+    a Celery forked worker where asyncio.run() creates a fresh loop each time).
+    """
+    import asyncio
+    global _redis_pool, _redis_loop_id
+
+    try:
+        current_loop = asyncio.get_running_loop()
+        current_loop_id = id(current_loop)
+    except RuntimeError:
+        current_loop_id = None
+
+    # If the pool was created on a different loop (Celery fork), recreate it
+    if _redis_pool is None or _redis_loop_id != current_loop_id:
         _redis_pool = await aioredis.from_url(
             settings.REDIS_URL,
             max_connections=settings.REDIS_MAX_CONNECTIONS,
             decode_responses=True,
         )
+        _redis_loop_id = current_loop_id
+
     return _redis_pool
 
 
 async def close_redis() -> None:
     """Gracefully close the Redis pool (call on app shutdown)."""
-    global _redis_pool
+    global _redis_pool, _redis_loop_id
     if _redis_pool:
         await _redis_pool.aclose()
         _redis_pool = None
+        _redis_loop_id = None
 
 
 # ── Agent lock helpers ──────────────────────────────────────────────────────

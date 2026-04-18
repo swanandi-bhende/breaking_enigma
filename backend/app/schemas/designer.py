@@ -73,7 +73,7 @@ class DataModelField(BaseModel):
 
 
 class Relationship(BaseModel):
-    type: Literal["one-to-one", "one-to-many", "many-to-many"]
+    type: Literal["one-to-one", "one-to-many", "many-to-one", "many-to-many"]
     with_entity: str
     foreign_key: str
 
@@ -91,6 +91,23 @@ class DesignSpec(BaseModel):
     system_architecture: SystemArchitecture
     api_spec: List[APIEndpoint]
     data_models: List[DataModel]
+
+
+class ArchitectureOutput(BaseModel):
+    system_architecture: SystemArchitecture
+    api_spec: List[APIEndpoint]
+
+
+class DatabaseSchemaOutput(BaseModel):
+    data_models: List[DataModel]
+
+
+class UIWireframesOutput(BaseModel):
+    screens: List[Screen]
+
+
+class UXFlowOutput(BaseModel):
+    interaction_flows: List[InteractionFlow]
 
 
 class DesignerAgentInput(BaseModel):

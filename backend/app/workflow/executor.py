@@ -107,6 +107,17 @@ async def _persist_artifact(
     Write an artifacts row to PostgreSQL.
     Implementation lives in backend/app/core/database.py.
     """
+    import os
+    import json
+    from app.core.config import settings
+    try:
+        os.makedirs(settings.ARTIFACT_STORAGE_PATH, exist_ok=True)
+        filepath = os.path.join(settings.ARTIFACT_STORAGE_PATH, f"{run_id}_{agent_name}_v{version}.json")
+        with open(filepath, "w") as f:
+            json.dump(content, f, indent=2)
+    except Exception as exc:
+        logger.warning(f"Failed to locally save artifact: {exc}")
+
     try:
         from app.core.database import save_artifact  # type: ignore[import]
 

@@ -38,6 +38,14 @@ async def lifespan(app: FastAPI):
     await redis.ping()
     logger.info("Redis connection OK")
 
+    # Create DB tables (idempotent)
+    try:
+        from app.core.database import create_tables
+        await create_tables()
+        logger.info("Database tables ready")
+    except Exception as exc:
+        logger.warning("DB table creation skipped: %s", exc)
+
     yield  # <— application runs here
 
     # Shutdown
@@ -227,7 +235,12 @@ except ImportError:
     logger.debug("artifacts router not yet implemented")
 
 try:
-    from app.api import websocket as ws_module  # type: ignore[import]
-    app.include_router(ws_module.router, tags=["WebSocket"])
-except ImportError:
-    logger.debug("websocket handler not yet implemented")
+    from app.api.websocket import socket_app, router as ws_router  # type: ignore[import]
+    app.include_router(ws_router, tags=["WebSocket"])
+    # Mount Socket.IO ASGI app — handles /socket.io/* paths
+    app.mount("/socket.io", socket_app)
+    logger.info("Socket.IO server mounted at /socket.io")
+except ImportError as e:
+    logger.warning("websocket handler not yet available: %s", e)
+except Exception as e:
+    logger.error("Failed to mount Socket.IO: %s", e)
