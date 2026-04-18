@@ -631,7 +631,7 @@ class DocumentationAgentInput(BaseModel):
     design_spec: DesignSpec
     developer_output: DeveloperAgentOutput
     qa_output: QAAgentOutput
-    devops_output: DevOpsAgentOutput
+    devops_output: Optional[DevOpsAgentOutput] = None
 
 
 class DocumentationAgentOutput(BaseModel):

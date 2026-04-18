@@ -1,6 +1,6 @@
 import React from 'react';
 import { usePipelineStore } from '@/store/pipelineStore';
-import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell } from 'recharts';
 import { ShieldCheck, ShieldAlert, Bug } from 'lucide-react';
 
 export default function QAScoreMeter() {
@@ -40,26 +40,24 @@ export default function QAScoreMeter() {
       
       <div className="p-4 flex flex-col items-center">
         <div className="relative w-32 h-16">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="100%"
-                startAngle={180}
-                endAngle={0}
-                innerRadius={40}
-                outerRadius={50}
-                paddingAngle={0}
-                dataKey="value"
-                stroke="none"
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-            </PieChart>
-          </ResponsiveContainer>
+          <PieChart width={128} height={64}>
+            <Pie
+              data={data}
+              cx="50%"
+              cy="100%"
+              startAngle={180}
+              endAngle={0}
+              innerRadius={40}
+              outerRadius={50}
+              paddingAngle={0}
+              dataKey="value"
+              stroke="none"
+            >
+              {data.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              ))}
+            </Pie>
+          </PieChart>
           <div className="absolute inset-0 flex flex-col items-center justify-end pb-1">
             <span className={`text-2xl font-bold ${isPass ? 'text-success' : 'text-error'}`}>
               {score}

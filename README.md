@@ -28,7 +28,30 @@ The pipeline is powered by a LangGraph StateMachine orchestrating 8 specialized 
 
 ## Nisarg's Workflow Setup
 
-This initial codebase implements the *Workflow Engine & Agent Orchestration*. The backend is scaffolded with Pydantic schemas validating all state transitions. The LangGraph DAG maps out the exact flow. Mock agent implementations are provided for `research`, `pm`, etc., to allow testing the workflow and feedback loops without the LLM calls yet.
+This codebase implements the *Workflow Engine & Agent Orchestration*. The backend uses Pydantic schemas to validate all state transitions, and the LangGraph DAG defines end-to-end execution including QA loops and final-stage parallel tasks.
+
+### Run The Full Stack (Docker)
+
+From project root:
+
+```bash
+docker compose down
+docker compose up -d --build
+```
+
+Quick health checks:
+
+```bash
+curl -sS http://127.0.0.1:8000/health
+curl -sS http://127.0.0.1:8000/api/v1/health
+curl -I http://127.0.0.1:3000
+```
+
+Useful logs during pipeline runs:
+
+```bash
+docker compose logs -f backend worker
+```
 
 ### Running Backend Tests
 
@@ -37,7 +60,13 @@ Navigate to backend:
 cd backend
 ```
 
-Ensure you have created a virtual envelope and installed the required dependencies via `pip install -r requirements.txt`.
+Create a virtual environment and install dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 Run the test suite using pytest:
 ```bash
