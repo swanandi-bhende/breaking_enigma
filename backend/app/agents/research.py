@@ -10,10 +10,10 @@ from langchain_core.output_parsers import PydanticOutputParser
 from pydantic import BaseModel, Field
 import json
 
-from ...core.config import settings
-from ...core.llm import llm_client
-from ...core.qdrant import qdrant_manager
-from ...schemas.research_pm import (
+from app.core.config import settings
+from app.core.llm import llm_client
+from app.core.qdrant import qdrant_manager
+from app.schemas.research_pm import (
     ResearchAgentInput,
     ResearchAgentOutput,
     ResearchReport,
@@ -25,9 +25,9 @@ from ...schemas.research_pm import (
     ViabilityData,
     FeasibilityData,
 )
-from ...utils.chunking import chunk_text_by_tokens, extract_json_from_response
-from ...utils.chunking import format_research_for_embedding
-from ..tools.search import web_search, get_available_tools
+from app.utils.chunking import chunk_text_by_tokens, extract_json_from_response
+from app.utils.chunking import format_research_for_embedding
+from app.agents.tools.search import web_search, get_available_tools
 
 
 RESEARCH_SYSTEM_PROMPT = """You are the Research Agent in an autonomous product development system.
@@ -130,6 +130,7 @@ class ResearchAgent:
             model=settings.OPENAI_MODEL,
             temperature=0.3,
             api_key=settings.OPENAI_API_KEY,
+            base_url=settings.OPENAI_BASE_URL,
         )
         self.parser = PydanticOutputParser(pydantic_object=ResearchReport)
         self.max_retries = 3
@@ -151,7 +152,7 @@ Focus on realistic estimates and actionable insights.
 
 {self.parser.get_format_instructions()}"""
 
-    async def run(self, input_data: ResearchAgentInput) -> ResearchAgentOutput:
+    async def run(self, input_data: ResearchAgentInput | Dict[str, Any]) -> ResearchAgentOutput:
         """
         Execute the Research Agent.
 
@@ -161,6 +162,9 @@ Focus on realistic estimates and actionable insights.
         Returns:
             ResearchAgentOutput with complete research_report
         """
+        if isinstance(input_data, dict):
+            input_data = ResearchAgentInput.model_validate(input_data)
+
         run_id = input_data.run_id
         project_brief = input_data.project_brief
 
@@ -169,15 +173,13 @@ Focus on realistic estimates and actionable insights.
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                chain = (
-                    ChatPromptTemplate.from_messages(
-                        [("system", RESEARCH_SYSTEM_PROMPT), ("human", "{input}")]
-                    )
-                    | self.llm
-                    | self.parser
+                response = await self.llm.ainvoke(
+                    [
+                        ("system", RESEARCH_SYSTEM_PROMPT),
+                        ("human", prompt),
+                    ]
                 )
-
-                result = await chain.ainvoke({"input": prompt})
+                result = self.parser.parse(response.content)
 
                 research_report_dict = result.dict()
 
@@ -236,7 +238,12 @@ Focus on realistic estimates and actionable insights.
             return [{"error": str(e)}]
 
 
-async def run_research_agent(input_data: ResearchAgentInput) -> ResearchAgentOutput:
-    """Main entry point for Research Agent."""
+async def run_research_agent(input_data: ResearchAgentInput | Dict[str, Any]) -> Dict[str, Any]:
+    """Main entry point for Research Agent.
+
+    The workflow executor validates raw dictionaries, so return serialized
+    output rather than a pydantic model instance.
+    """
     agent = ResearchAgent()
-    return await agent.run(input_data)
+    result = await agent.run(input_data)
+    return result.model_dump(mode="json")

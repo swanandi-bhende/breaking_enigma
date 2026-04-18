@@ -61,7 +61,7 @@ class OrchestratorConfig(BaseModel):
     max_qa_iterations: int = Field(default=3, ge=1, le=10)
     skip_agents: List[str] = Field(default_factory=list)
     human_checkpoints: List[str] = Field(default_factory=list)
-    llm_model: str = "gpt-4o"
+    llm_model: str = "llama-3.1-8b-instant"
     target_platform: TargetPlatform = TargetPlatform.WEB
 
 

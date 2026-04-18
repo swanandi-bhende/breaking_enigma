@@ -3,7 +3,7 @@
 ADWF is an autonomous, multi-agent AI system that accepts a single product idea as input and produces a fully scoped, designed, coded, tested, deployed, and documented software product as output — without human intervention between stages.
 
 ## System Architecture
-
+ 
 The pipeline is powered by a LangGraph StateMachine orchestrating 8 specialized AI agents:
 
 1. **Orchestrator Agent:** Pipeline setup and config.

@@ -65,7 +65,10 @@ async def _normalise_idea(
     Call the LLM to turn the raw idea into a structured ProjectBrief dict.
     Retries up to 3 times on malformed JSON.
     """
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    client = AsyncOpenAI(
+        api_key=settings.OPENAI_API_KEY,
+        base_url=settings.OPENAI_BASE_URL,
+    )
     user_prompt = f'Product idea: "{idea}"\nHint — target platform: {target_platform_hint}'
 
     for attempt in range(1, 4):

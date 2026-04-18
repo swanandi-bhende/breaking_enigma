@@ -1,6 +1,5 @@
 import { useEffect } from "react";
 import { usePipelineStore, AgentStatus } from "@/store/pipelineStore";
-import { io } from "socket.io-client";
 
 export function usePipelineSocket(runId: string | null) {
   const { setAgentStatus, appendLog, setQAScore, setGlobalState } = usePipelineStore();
@@ -8,31 +7,63 @@ export function usePipelineSocket(runId: string | null) {
   useEffect(() => {
     if (!runId) return;
 
-    // Use environment variable or fallback to localhost during dev
-    const wsUrl = process.env.NEXT_PUBLIC_WS_URL || "http://localhost:8000";
-    
-    const socket = io(wsUrl, {
-      query: { run_id: runId },
-    });
+    // NEXT_PUBLIC_WS_URL should point to /ws (for example ws://localhost:8000/ws).
+    const rawWsUrl = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
+    const url = new URL(rawWsUrl);
+    url.searchParams.set("run_id", runId);
 
-    socket.on("AGENT_STATUS_CHANGED", ({ agent_name, new_status }: { agent_name: string, new_status: AgentStatus }) => {
-      setAgentStatus(agent_name, new_status);
-    });
+    const ws = new WebSocket(url.toString());
 
-    socket.on("AGENT_LOG_LINE", ({ agent_name, line, level }: { agent_name: string, line: string, level?: string }) => {
-      appendLog({ agent: agent_name, text: line, level, timestamp: Date.now() });
-    });
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data as string) as Record<string, any>;
+        const eventType = payload.event_type as string | undefined;
 
-    socket.on("QA_VERDICT", ({ qa_score, verdict, bugs_count }: { qa_score: number, verdict: string, bugs_count: number }) => {
-      setQAScore({ score: qa_score, verdict, bugsCount: bugs_count });
-    });
+        if (eventType === "AGENT_STATUS_CHANGED") {
+          const agentName = String(payload.agent_name || "unknown");
+          const status = payload.new_status as AgentStatus | undefined;
+          if (status) setAgentStatus(agentName, status);
+          return;
+        }
 
-    socket.on("GLOBAL_STATE_UPDATED", ({ state }: { state: Record<string, any> }) => {
-      setGlobalState(state);
-    });
+        if (eventType === "AGENT_LOG_LINE") {
+          appendLog({
+            agent: String(payload.agent_name || "system"),
+            text: String(payload.line || ""),
+            level: payload.level ? String(payload.level) : undefined,
+            timestamp: Date.now(),
+          });
+          return;
+        }
 
-    return () => { 
-      socket.disconnect(); 
+        if (eventType === "QA_VERDICT") {
+          setQAScore({
+            score: typeof payload.qa_score === "number" ? payload.qa_score : null,
+            verdict: payload.verdict ? String(payload.verdict) : null,
+            bugsCount: typeof payload.bugs_count === "number" ? payload.bugs_count : null,
+          });
+          return;
+        }
+
+        if (eventType === "GLOBAL_STATE_UPDATED" && payload.state) {
+          setGlobalState(payload.state as Record<string, any>);
+        }
+      } catch {
+        // Ignore malformed messages to keep the dashboard responsive.
+      }
+    };
+
+    ws.onerror = () => {
+      appendLog({
+        agent: "system",
+        text: "WebSocket connection error",
+        level: "error",
+        timestamp: Date.now(),
+      });
+    };
+
+    return () => {
+      ws.close();
     };
   }, [runId, setAgentStatus, appendLog, setQAScore, setGlobalState]);
 }

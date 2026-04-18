@@ -2,7 +2,7 @@ from langchain_core.tools import tool
 from typing import List, Dict, Any, Optional
 import requests
 from bs4 import BeautifulSoup
-from ....core.config import settings
+from app.core.config import settings
 
 
 @tool
@@ -76,7 +76,7 @@ def serp_api_search(query: str, num_results: int = 10) -> List[Dict[str, Any]]:
             "output": "json",
         }
         response = requests.get(
-            "https:// serpapi.com/search", params=params, timeout=15
+            "https://serpapi.com/search", params=params, timeout=15
         )
 
         if response.status_code != 200:

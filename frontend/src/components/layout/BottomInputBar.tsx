@@ -4,22 +4,54 @@ import { Play, Square, Download } from 'lucide-react';
 
 export default function BottomInputBar() {
   const [idea, setIdea] = useState('');
-  const { runId, setRunId, reset, agentStatuses } = usePipelineStore();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const { runId, setRunId, reset, agentStatuses, appendLog } = usePipelineStore();
 
-  const isRunning = Object.values(agentStatuses).includes('RUNNING');
+  const isRunning = isSubmitting || Object.values(agentStatuses).includes('RUNNING');
   const isComplete = Object.values(agentStatuses).every(s => s === 'COMPLETE' || s === 'SKIPPED') && runId;
 
   const handleRun = async () => {
     if (!idea.trim()) return;
-    
-    // In a real implementation, this would POST to /api/v1/runs
-    // and receive a runId. For now, we mock it.
+
+    const apiBase = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
     reset();
-    const mockRunId = crypto.randomUUID();
-    setRunId(mockRunId);
-    
-    // Mock API call to start
-    console.log("Starting pipeline with idea:", idea);
+    setIsSubmitting(true);
+
+    try {
+      const response = await fetch(`${apiBase}/api/v1/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ idea: idea.trim() }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Run creation failed (${response.status}): ${errorText}`);
+      }
+
+      const data = await response.json() as { run_id: string };
+      setRunId(data.run_id);
+      appendLog({
+        agent: 'system',
+        text: `Pipeline started (run_id=${data.run_id})`,
+        level: 'info',
+        timestamp: Date.now(),
+      });
+      console.log('Starting pipeline with idea:', idea);
+    } catch (error) {
+      appendLog({
+        agent: 'system',
+        text: error instanceof Error ? error.message : 'Failed to start pipeline',
+        level: 'error',
+        timestamp: Date.now(),
+      });
+      console.error('Failed to start pipeline:', error);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleStop = () => {

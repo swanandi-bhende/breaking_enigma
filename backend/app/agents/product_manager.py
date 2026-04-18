@@ -4,13 +4,12 @@ Produces complete PRD with user stories in Given/When/Then format.
 """
 
 from typing import Dict, Any, List
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
 
-from ...core.config import settings
-from ...core.qdrant import qdrant_manager
-from ...schemas.research_pm import (
+from app.core.config import settings
+from app.core.qdrant import qdrant_manager
+from app.schemas.research_pm import (
     PMAgentInput,
     PMAgentOutput,
     PRD,
@@ -23,7 +22,7 @@ from ...schemas.research_pm import (
     UserFlowStep,
     ResearchReport,
 )
-from ...utils.chunking import format_prd_for_embedding
+from app.utils.chunking import format_prd_for_embedding
 
 
 PM_SYSTEM_PROMPT = """You are the Product Manager Agent in an autonomous product development system.
@@ -117,6 +116,7 @@ class ProductManagerAgent:
             model=settings.OPENAI_MODEL,
             temperature=0.3,
             api_key=settings.OPENAI_API_KEY,
+          base_url=settings.OPENAI_BASE_URL,
         )
         self.parser = PydanticOutputParser(pydantic_object=PRD)
         self.max_retries = 3
@@ -170,7 +170,7 @@ Now create a comprehensive PRD based on this research.
 
         return prompt
 
-    async def run(self, input_data: PMAgentInput) -> PMAgentOutput:
+    async def run(self, input_data: PMAgentInput | Dict[str, Any]) -> PMAgentOutput:
         """
         Execute the PM Agent.
 
@@ -180,6 +180,9 @@ Now create a comprehensive PRD based on this research.
         Returns:
             PMAgentOutput with complete PRD
         """
+        if isinstance(input_data, dict):
+            input_data = PMAgentInput.model_validate(input_data)
+
         run_id = input_data.run_id
         research_report = input_data.research_report
 
@@ -188,15 +191,13 @@ Now create a comprehensive PRD based on this research.
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                chain = (
-                    ChatPromptTemplate.from_messages(
-                        [("system", PM_SYSTEM_PROMPT), ("human", "{input}")]
-                    )
-                    | self.llm
-                    | self.parser
+                response = await self.llm.ainvoke(
+                    [
+                        ("system", PM_SYSTEM_PROMPT),
+                        ("human", prompt),
+                    ]
                 )
-
-                result = await chain.ainvoke({"input": prompt})
+                result = self.parser.parse(response.content)
 
                 await self._store_embeddings(run_id, result.dict())
 
@@ -243,7 +244,12 @@ Now create a comprehensive PRD based on this research.
             print(f"Warning: Failed to store PRD embeddings: {e}")
 
 
-async def run_pm_agent(input_data: PMAgentInput) -> PMAgentOutput:
-    """Main entry point for PM Agent."""
-    agent = ProductManagerAgent()
-    return await agent.run(input_data)
+async def run_pm_agent(input_data: PMAgentInput | Dict[str, Any]) -> Dict[str, Any]:
+  """Main entry point for PM Agent.
+
+  The workflow executor validates raw dictionaries, so return serialized
+  output rather than a pydantic model instance.
+  """
+  agent = ProductManagerAgent()
+  result = await agent.run(input_data)
+  return result.model_dump(mode="json")

@@ -35,7 +35,7 @@ class Settings(BaseSettings):
 
     # ── LLM (Groq default) ──────────────────────────────────────────────────
     OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "llama3-70b-8192"
+    OPENAI_MODEL: str = "llama-3.1-8b-instant"
     OPENAI_BASE_URL: str = "https://api.groq.com/openai/v1"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
