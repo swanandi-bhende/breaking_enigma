@@ -27,6 +27,15 @@ from app.workflow.state import PipelineState
 logger = logging.getLogger(__name__)
 
 
+async def _publish_global_state_snapshot(state: PipelineState) -> None:
+    """Push the latest full pipeline state to the dashboard."""
+    await publish_event(
+        state["run_id"],
+        EventType.GLOBAL_STATE_UPDATED,
+        metadata={"state": dict(state)},
+    )
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Agent stub imports
 # Each of these is implemented by Aditya / Anshul in backend/app/agents/.
@@ -108,6 +117,7 @@ async def node_research(state: PipelineState) -> PipelineState:
         "research_embedding_ids": output.get("embedding_ids", []),
     }
     state["phases"]["research"]["status"] = "COMPLETE"
+    await _publish_global_state_snapshot(state)
     return await _maybe_checkpoint(state, "research")
 
 
@@ -115,22 +125,26 @@ async def node_product_manager(state: PipelineState) -> PipelineState:
     # Skip if in skip_agents list
     if "product_manager" in state["config"].get("skip_agents", []):
         state["phases"]["product_manager"]["status"] = "SKIPPED"
+        await _publish_global_state_snapshot(state)
         return state
 
     output = await agent_executor("product_manager", _run_pm, state, iteration=1)
     state = {**state, "prd": output.get("prd")}
     state["phases"]["product_manager"]["status"] = "COMPLETE"
+    await _publish_global_state_snapshot(state)
     return await _maybe_checkpoint(state, "product_manager")
 
 
 async def node_designer(state: PipelineState) -> PipelineState:
     if "designer" in state["config"].get("skip_agents", []):
         state["phases"]["designer"]["status"] = "SKIPPED"
+        await _publish_global_state_snapshot(state)
         return state
 
     output = await agent_executor("designer", _run_designer, state, iteration=1)
     state = {**state, "design_spec": output.get("design_spec")}
     state["phases"]["designer"]["status"] = "COMPLETE"
+    await _publish_global_state_snapshot(state)
     return await _maybe_checkpoint(state, "designer")
 
 
@@ -140,6 +154,7 @@ async def node_developer(state: PipelineState) -> PipelineState:
     state = {**state, "developer_output": output}
     state["phases"]["developer"]["status"] = "COMPLETE"
     state["phases"]["developer"]["iteration"] = iteration
+    await _publish_global_state_snapshot(state)
     return state
 
 
@@ -177,6 +192,8 @@ async def node_qa(state: PipelineState) -> PipelineState:
             EventType.QA_ROUTING_LOOP,
             metadata={"from": "qa", "to": "developer", "iteration": qa_iter},
         )
+
+    await _publish_global_state_snapshot(state)
 
     return state
 
@@ -223,6 +240,7 @@ async def node_parallel_final(state: PipelineState) -> PipelineState:
         "run_state": "COMPLETE",
     }
 
+    await _publish_global_state_snapshot(state)
     await publish_event(run_id, EventType.PIPELINE_COMPLETE)
     return state
 

@@ -15,7 +15,27 @@ const AGENT_META: Record<string, { label: string, colorVar: string }> = {
 };
 
 export default function MainCanvas() {
-  const { agentStatuses, runId } = usePipelineStore();
+  const { agentStatuses, runId, selectedAgent } = usePipelineStore();
+
+  // If user manually selected an agent, show it (even if no output yet)
+  if (selectedAgent) {
+    const meta = AGENT_META[selectedAgent];
+    const status = agentStatuses[selectedAgent];
+    return (
+      <div className="flex-1 flex flex-col bg-bg-base overflow-hidden">
+        <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+          <div className="max-w-4xl mx-auto w-full">
+            <AgentHeader 
+              agentName={meta.label} 
+              colorVar={meta.colorVar} 
+              stageInfo={status === 'RUNNING' ? 'Generating output...' : status === 'COMPLETE' ? 'Completed' : `Status: ${status}`}
+            />
+            <OutputPreview agentId={selectedAgent} />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Find the currently active agent (RUNNING)
   const activeAgent = Object.keys(agentStatuses).find(key => agentStatuses[key] === 'RUNNING');

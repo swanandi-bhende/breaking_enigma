@@ -4,6 +4,7 @@ Produces comprehensive research_report JSON used by PM Agent.
 """
 
 from typing import Dict, Any, List, Optional
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
@@ -28,6 +29,10 @@ from app.schemas.research_pm import (
 from app.utils.chunking import chunk_text_by_tokens, extract_json_from_response
 from app.utils.chunking import format_research_for_embedding
 from app.agents.tools.search import web_search, get_available_tools
+from app.agents.tools.search import serp_api_search
+
+
+logger = logging.getLogger(__name__)
 
 
 RESEARCH_SYSTEM_PROMPT = """You are the Research Agent in an autonomous product development system.
@@ -152,6 +157,57 @@ Focus on realistic estimates and actionable insights.
 
 {self.parser.get_format_instructions()}"""
 
+    async def _collect_search_evidence(self, project_brief: Dict[str, Any]) -> Dict[str, Any]:
+        """Collect live web evidence to ground the research report."""
+        normalized_idea = project_brief.get("normalized_idea", "")
+        domain = project_brief.get("domain", "general")
+
+        queries = [
+            f"{normalized_idea} market size TAM SAM SOM",
+            f"{normalized_idea} top competitors pricing",
+            f"{domain} user pain points trends 2025 2026",
+        ]
+
+        source = "serp_api" if settings.SERP_API_KEY else "web_search"
+        collected_results: List[Dict[str, Any]] = []
+
+        for query in queries:
+            if source == "serp_api":
+                raw_results = serp_api_search.invoke({"query": query, "num_results": 5})
+            else:
+                raw_results = web_search.invoke({"query": query, "num_results": 5})
+
+            for item in raw_results:
+                if isinstance(item, dict) and not item.get("error"):
+                    collected_results.append(
+                        {
+                            "query": query,
+                            "title": item.get("title", ""),
+                            "url": item.get("url", ""),
+                            "snippet": item.get("snippet", ""),
+                        }
+                    )
+
+        logger.info("[research] using %s evidence, records=%d", source, len(collected_results))
+        return {"source": source, "results": collected_results}
+
+    def _format_evidence_for_prompt(self, evidence: Dict[str, Any]) -> str:
+        """Render concise evidence blocks for the LLM prompt."""
+        source = evidence.get("source", "web_search")
+        results = evidence.get("results", [])
+        if not results:
+            return "No external evidence found. Use conservative estimates and clearly avoid overclaiming."
+
+        lines = [f"Source provider: {source}"]
+        for idx, row in enumerate(results[:12], start=1):
+            lines.append(
+                f"{idx}. Query: {row.get('query', '')}\n"
+                f"   Title: {row.get('title', '')}\n"
+                f"   URL: {row.get('url', '')}\n"
+                f"   Snippet: {row.get('snippet', '')}"
+            )
+        return "\n".join(lines)
+
     async def run(self, input_data: ResearchAgentInput | Dict[str, Any]) -> ResearchAgentOutput:
         """
         Execute the Research Agent.
@@ -169,6 +225,13 @@ Focus on realistic estimates and actionable insights.
         project_brief = input_data.project_brief
 
         prompt = self._build_research_prompt(project_brief)
+        evidence = await self._collect_search_evidence(project_brief)
+        evidence_block = self._format_evidence_for_prompt(evidence)
+        prompt = (
+            prompt
+            + "\n\nLive External Evidence (ground your estimates and competitor analysis in this data):\n"
+            + evidence_block
+        )
 
         last_error = None
         for attempt in range(self.max_retries):

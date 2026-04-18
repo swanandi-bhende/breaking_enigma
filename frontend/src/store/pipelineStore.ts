@@ -12,6 +12,7 @@ export interface LogLine {
 export interface PipelineState {
   runId: string | null;
   agentStatuses: Record<string, AgentStatus>;
+  selectedAgent: string | null;
   logs: LogLine[];
   qaScore: {
     score: number | null;
@@ -23,6 +24,7 @@ export interface PipelineState {
   // Actions
   setRunId: (runId: string) => void;
   setAgentStatus: (agentName: string, status: AgentStatus) => void;
+  setSelectedAgent: (agentName: string | null) => void;
   appendLog: (log: LogLine) => void;
   setQAScore: (scoreData: { score: number | null; verdict: string | null; bugsCount: number | null }) => void;
   setGlobalState: (state: Record<string, any>) => void;
@@ -42,6 +44,7 @@ const initialAgentStatuses: Record<string, AgentStatus> = {
 export const usePipelineStore = create<PipelineState>((set) => ({
   runId: null,
   agentStatuses: { ...initialAgentStatuses },
+  selectedAgent: null,
   logs: [],
   qaScore: {
     score: null,
@@ -59,6 +62,8 @@ export const usePipelineStore = create<PipelineState>((set) => ({
     }
   })),
 
+  setSelectedAgent: (selectedAgent) => set({ selectedAgent }),
+
   appendLog: (log) => set((state) => ({
     logs: [...state.logs, log]
   })),
@@ -70,6 +75,7 @@ export const usePipelineStore = create<PipelineState>((set) => ({
   reset: () => set({
     runId: null,
     agentStatuses: { ...initialAgentStatuses },
+    selectedAgent: null,
     logs: [],
     qaScore: { score: null, verdict: null, bugsCount: null },
     globalState: null,
