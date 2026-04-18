@@ -1,6 +1,15 @@
 import { useEffect } from "react";
 import { usePipelineStore, AgentStatus } from "@/store/pipelineStore";
 
+const AGENT_NAME_MAP: Record<string, string> = {
+  product_manager: "pm",
+  documentation: "docs",
+};
+
+function normalizeAgentName(agentName: string): string {
+  return AGENT_NAME_MAP[agentName] ?? agentName;
+}
+
 export function usePipelineSocket(runId: string | null) {
   const { setAgentStatus, appendLog, setQAScore, setGlobalState } = usePipelineStore();
 
@@ -20,15 +29,16 @@ export function usePipelineSocket(runId: string | null) {
         const eventType = payload.event_type as string | undefined;
 
         if (eventType === "AGENT_STATUS_CHANGED") {
-          const agentName = String(payload.agent_name || "unknown");
+          const agentName = normalizeAgentName(String(payload.agent_name || "unknown"));
           const status = payload.new_status as AgentStatus | undefined;
           if (status) setAgentStatus(agentName, status);
           return;
         }
 
         if (eventType === "AGENT_LOG_LINE") {
+          const agentName = normalizeAgentName(String(payload.agent_name || "system"));
           appendLog({
-            agent: String(payload.agent_name || "system"),
+            agent: agentName,
             text: String(payload.line || ""),
             level: payload.level ? String(payload.level) : undefined,
             timestamp: Date.now(),

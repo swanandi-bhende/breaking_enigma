@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import redis.asyncio as aioredis
@@ -29,26 +30,42 @@ logger = logging.getLogger(__name__)
 # ── Singleton pool ──────────────────────────────────────────────────────────
 
 _redis_pool: Optional[Redis] = None
+_redis_pool_loop_id: Optional[int] = None
 
 
 async def get_redis() -> Redis:
     """Return (and lazily create) the shared async Redis connection pool."""
-    global _redis_pool
+    global _redis_pool, _redis_pool_loop_id
+    current_loop_id = id(asyncio.get_running_loop())
+
+    # Celery tasks may run with a fresh event loop per invocation. Reusing a
+    # Redis async client bound to an old loop causes "Future attached to a
+    # different loop" and "Event loop is closed" crashes.
+    if _redis_pool is not None and _redis_pool_loop_id != current_loop_id:
+        try:
+            await _redis_pool.aclose()
+        except Exception:
+            logger.debug("Ignoring Redis close failure during loop switch", exc_info=True)
+        _redis_pool = None
+        _redis_pool_loop_id = None
+
     if _redis_pool is None:
         _redis_pool = await aioredis.from_url(
             settings.REDIS_URL,
             max_connections=settings.REDIS_MAX_CONNECTIONS,
             decode_responses=True,
         )
+        _redis_pool_loop_id = current_loop_id
     return _redis_pool
 
 
 async def close_redis() -> None:
     """Gracefully close the Redis pool (call on app shutdown)."""
-    global _redis_pool
+    global _redis_pool, _redis_pool_loop_id
     if _redis_pool:
         await _redis_pool.aclose()
         _redis_pool = None
+        _redis_pool_loop_id = None
 
 
 # ── Agent lock helpers ──────────────────────────────────────────────────────
