@@ -33,9 +33,10 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: Optional[str] = None
 
-    # ── OpenAI ──────────────────────────────────────────────────────────────
+    # ── LLM (Groq default) ──────────────────────────────────────────────────
     OPENAI_API_KEY: str
-    OPENAI_MODEL: str = "gpt-4o"
+    OPENAI_MODEL: str = "llama3-70b-8192"
+    OPENAI_BASE_URL: str = "https://api.groq.com/openai/v1"
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
     # ── Application ─────────────────────────────────────────────────────────
