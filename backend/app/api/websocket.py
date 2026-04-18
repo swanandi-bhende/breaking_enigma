@@ -1,9 +1,11 @@
-from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 import logging
 
 logger = logging.getLogger(__name__)
 
+router = APIRouter()
+
+@router.websocket("/ws")
 async def handle_websocket(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connected")
