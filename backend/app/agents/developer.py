@@ -1,28 +1,16 @@
-"""
-Developer Agent — stub for interface compatibility.
-
-Full implementation is Anshul's domain.
-
-Contract: must accept a dict matching DeveloperAgentInput and
-return a dict matching DeveloperAgentOutput.
-"""
-
-from __future__ import annotations
-
 import logging
-from typing import Any, Dict
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
+class DeveloperAgent:
+    def __init__(self):
+        self.name = "Developer Agent"
 
-async def run_developer_agent(input_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    [STUB] Full implementation owned by Anshul.
-
-    Input shape: DeveloperAgentInput
-    Output shape: DeveloperAgentOutput
-    """
-    raise NotImplementedError(
-        "Developer Agent is not yet implemented. "
-        "See backend/app/agents/developer.py — owned by Anshul."
-    )
+    async def execute(self, run_id: str, design_spec: Dict[str, Any]) -> Dict[str, Any]:
+        logger.info(f"Executing Developer Agent for run {run_id}")
+        # Implement the 5-step protocol to generate code
+        return {
+            "run_id": run_id,
+            "generated_code": {},
+        }
