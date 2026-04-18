@@ -35,96 +35,17 @@ from app.agents.tools.search import serp_api_search
 logger = logging.getLogger(__name__)
 
 
-RESEARCH_SYSTEM_PROMPT = """You are the Research Agent in an autonomous product development system.
-Your role is to gather comprehensive market and user intelligence for a product idea.
+RESEARCH_SYSTEM_PROMPT = """You are a market research analyst. Your job is to gather market intelligence and produce a detailed JSON research report.
 
-## Your Responsibilities:
-1. **Problem Clarification** - Decompose the idea into clear problem statement, user hypothesis, solution hypothesis
-2. **Market Research** - TAM/SAM/SOM estimation, industry overview, growth trends, market timing
-3. **User Research** - Persona creation (3-5 archetypes), target segment definition
-4. **Pain Point Extraction** - Ranked list of user pains mapped to existing solutions
-5. **Competitor Analysis** - Top 5 competitors: features, pricing, positioning, weaknesses
-6. **Business Viability** - Revenue model options, monetization potential
-7. **Technical Feasibility** - Tech risk assessment, key technical challenges
+CRITICAL REQUIREMENTS:
+- Respond ONLY with a valid JSON object, nothing else
+- Do NOT include any markdown, code fences, or explanatory text
+- Do NOT include any preamble or closing text
+- All fields MUST be present in the JSON, use null only if data is truly unavailable
+- Ensure ALL strings are properly escaped and quoted
+- Ensure ALL arrays and objects are properly closed with correct commas
 
-## Output Requirements:
-- You MUST respond with ONLY a valid JSON object matching the schema below
-- Do NOT include any explanatory text, markdown code fences, or preamble
-- If you cannot complete a field, use null — never omit required fields
-- Use realistic estimates when exact data is unavailable
-
-## Research Report Schema:
-```json
-{
-  "problem_statement": {
-    "core_problem": "string",
-    "affected_users": "string", 
-    "current_solutions_fail_because": "string",
-    "opportunity_window": "string"
-  },
-  "market": {
-    "tam_usd": 0,
-    "sam_usd": 0,
-    "som_usd": 0,
-    "industry": "string",
-    "growth_rate_yoy_percent": 0,
-    "key_trends": ["string"]
-  },
-  "personas": [
-    {
-      "name": "string",
-      "age_range": "string",
-      "occupation": "string",
-      "goals": ["string"],
-      "frustrations": ["string"],
-      "tech_savviness": "low|medium|high",
-      "primary_device": "string"
-    }
-  ],
-  "pain_points": [
-    {
-      "pain": "string",
-      "severity": "low|medium|high|critical",
-      "frequency": "rare|occasional|frequent|constant",
-      "existing_workaround": "string"
-    }
-  ],
-  "competitors": [
-    {
-      "name": "string",
-      "url": "string",
-      "positioning": "string",
-      "pricing_model": "string",
-      "key_features": ["string"],
-      "weaknesses": ["string"],
-      "user_sentiment": "string"
-    }
-  ],
-  "viability": {
-    "revenue_models": ["string"],
-    "recommended_model": "string",
-    "estimated_arpu": "string",
-    "go_to_market_strategy": "string",
-    "viability_score": 1-10
-  },
-  "feasibility": {
-    "technical_risks": ["string"],
-    "complexity": "low|medium|high",
-    "estimated_mvp_weeks": 0,
-    "key_dependencies": ["string"],
-    "feasibility_score": 1-10
-  }
-}
-```
-
-## Tool Usage:
-You have access to web search tools. Use them to gather real data for:
-- Market size estimates
-- Competitor information
-- Industry trends
-- User pain points
-
-Be thorough but pragmatic. Return your complete research report as a JSON object."""
+Output ONLY the JSON object, starting with { and ending with }."""
 
 
 class ResearchAgent:
@@ -146,16 +67,80 @@ class ResearchAgent:
         domain = project_brief.get("domain", "general")
         target_platform = project_brief.get("target_platform", "web")
 
+        schema_example = """{
+  "problem_statement": {
+    "core_problem": "...",
+    "affected_users": "...",
+    "current_solutions_fail_because": "...",
+    "opportunity_window": "..."
+  },
+  "market": {
+    "tam_usd": 0,
+    "sam_usd": 0,
+    "som_usd": 0,
+    "industry": "...",
+    "growth_rate_yoy_percent": 0,
+    "key_trends": ["..."]
+  },
+  "personas": [
+    {
+      "name": "...",
+      "age_range": "...",
+      "occupation": "...",
+      "goals": ["..."],
+      "frustrations": ["..."],
+      "tech_savviness": "low|medium|high",
+      "primary_device": "..."
+    }
+  ],
+  "pain_points": [
+    {
+      "pain": "...",
+      "severity": "low|medium|high|critical",
+      "frequency": "rare|occasional|frequent|constant",
+      "existing_workaround": "..."
+    }
+  ],
+  "competitors": [
+    {
+      "name": "...",
+      "url": "...",
+      "positioning": "...",
+      "pricing_model": "...",
+      "key_features": ["..."],
+      "weaknesses": ["..."],
+      "user_sentiment": "..."
+    }
+  ],
+  "viability": {
+    "revenue_models": ["..."],
+    "recommended_model": "...",
+    "estimated_arpu": "...",
+    "go_to_market_strategy": "...",
+    "viability_score": 5
+  },
+  "feasibility": {
+    "technical_risks": ["..."],
+    "complexity": "low|medium|high",
+    "estimated_mvp_weeks": 0,
+    "key_dependencies": ["..."],
+    "feasibility_score": 5
+  }
+}"""
+
         return f"""Product Idea: {normalized_idea}
 Domain: {domain}
 Target Platform: {target_platform}
 
-Based on this product idea, conduct comprehensive research and produce a detailed research report in JSON format.
+Conduct comprehensive market research and produce a detailed research report matching this JSON schema:
 
-Use web search to gather real market data, competitor information, and industry trends.
-Focus on realistic estimates and actionable insights.
+{schema_example}
 
-{self.parser.get_format_instructions()}"""
+Requirements:
+1. Use web search to gather real data where possible
+2. Fill in ALL fields - use null only if absolutely necessary
+3. Ensure 2+ competitors with complete data
+4. Return ONLY the JSON object, no additional text"""
 
     async def _collect_search_evidence(self, project_brief: Dict[str, Any]) -> Dict[str, Any]:
         """Collect live web evidence to ground the research report."""
@@ -209,15 +194,10 @@ Focus on realistic estimates and actionable insights.
         return "\n".join(lines)
 
     async def run(self, input_data: ResearchAgentInput | Dict[str, Any]) -> ResearchAgentOutput:
-        """
-        Execute the Research Agent.
-
-        Args:
-            input_data: ResearchAgentInput with run_id and project_brief
-
-        Returns:
-            ResearchAgentOutput with complete research_report
-        """
+        """Execute the Research Agent with exponential backoff for rate limits."""
+        import asyncio
+        import json
+        
         if isinstance(input_data, dict):
             input_data = ResearchAgentInput.model_validate(input_data)
 
@@ -229,7 +209,7 @@ Focus on realistic estimates and actionable insights.
         evidence_block = self._format_evidence_for_prompt(evidence)
         prompt = (
             prompt
-            + "\n\nLive External Evidence (ground your estimates and competitor analysis in this data):\n"
+            + "\n\nUse this evidence for estimates and competitor analysis:\n"
             + evidence_block
         )
 
@@ -242,8 +222,68 @@ Focus on realistic estimates and actionable insights.
                         ("human", prompt),
                     ]
                 )
-                result = self.parser.parse(response.content)
-
+                
+                # Extract and parse JSON with multiple fallback strategies
+                response_content = response.content
+                logger.info(f"[research] Raw response length: {len(response_content)} chars")
+                
+                json_obj = None
+                
+                # Strategy 1: Try extract_json_from_response
+                try:
+                    json_obj = extract_json_from_response(response_content)
+                    logger.info(f"[research] Successfully parsed JSON using extract_json_from_response")
+                except Exception as e1:
+                    logger.warning(f"[research] extract_json_from_response failed: {str(e1)[:100]}")
+                    
+                    # Strategy 2: Try direct JSON parsing
+                    try:
+                        json_obj = json.loads(response_content.strip())
+                        logger.info(f"[research] Successfully parsed JSON using direct parsing")
+                    except Exception as e2:
+                        logger.warning(f"[research] Direct JSON parsing failed: {str(e2)[:100]}")
+                        
+                        # Strategy 3: Find and extract JSON object
+                        try:
+                            import re
+                            # Find the first { and last } to extract potential JSON
+                            start_idx = response_content.find('{')
+                            end_idx = response_content.rfind('}')
+                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                                potential_json = response_content[start_idx:end_idx+1]
+                                json_obj = json.loads(potential_json)
+                                logger.info(f"[research] Successfully parsed JSON using bracket extraction")
+                            else:
+                                raise ValueError("Could not find JSON brackets in response")
+                        except Exception as e3:
+                            logger.error(f"[research] Bracket extraction failed: {str(e3)[:100]}")
+                            raise ValueError(f"Could not parse JSON from response after all strategies: {e1}")
+                
+                if json_obj is None:
+                    raise ValueError("JSON parsing returned None")
+                
+                # Validate required fields
+                required_fields = ["problem_statement", "market", "personas", "pain_points", "competitors", "viability", "feasibility"]
+                missing_fields = [f for f in required_fields if f not in json_obj]
+                if missing_fields:
+                    raise ValueError(f"Missing required fields in JSON: {missing_fields}")
+                
+                # Validate competitors
+                competitors = json_obj.get("competitors", [])
+                if len(competitors) < 2:
+                    raise ValueError(f"Need at least 2 complete competitors, got {len(competitors)}")
+                
+                # Construct ResearchReport with validation
+                logger.info(f"[research] JSON validation passed, creating ResearchReport")
+                try:
+                    result = ResearchReport(**json_obj)
+                except Exception as validation_error:
+                    logger.error(f"[research] Pydantic validation error: {str(validation_error)[:500]}")
+                    # Log the failing fields for debugging
+                    error_str = str(validation_error)
+                    logger.error(f"[research] Full JSON keys: {list(json_obj.keys())}")
+                    raise
+                    
                 research_report_dict = result.dict()
 
                 embedding_ids = await self._store_embeddings(
@@ -255,8 +295,21 @@ Focus on realistic estimates and actionable insights.
                 )
 
             except Exception as e:
+                error_str = str(e)
                 last_error = e
+                logger.error(f"[research] Attempt {attempt+1}/{self.max_retries} failed: {error_str[:200]}")
+                
+                # Handle rate limit with exponential backoff
+                if "rate_limit_exceeded" in error_str or "429" in error_str:
+                    wait_time = min(2 ** attempt * 10, 120)  # Exponential backoff
+                    logger.warning(f"[research] Rate limit, waiting {wait_time}s before retry {attempt+1}/{self.max_retries}")
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(wait_time)
+                        continue
+                
+                # Retry on parsing errors
                 if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2)
                     continue
 
         raise Exception(

@@ -1,5 +1,6 @@
 import React from 'react';
 import { usePipelineStore } from '@/store/pipelineStore';
+import PRDPanel from '@/components/canvas/PRDPanel';
 
 function formatCurrency(value: number | null | undefined): string {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-';
@@ -197,16 +198,12 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
         );
       case 'pm':
         return (
-          <div className="bg-surface border border-border rounded-lg p-6">
-            <h3 className="text-lg font-bold text-[var(--agent-pm)] mb-4">Product Requirements Document</h3>
-            {payload ? (
-              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap">
-                {JSON.stringify(payload, null, 2)}
-              </pre>
-            ) : (
+          payload ? <PRDPanel payload={payload} /> : (
+            <div className="bg-surface border border-border rounded-lg p-6">
+              <h3 className="text-lg font-bold text-[var(--agent-pm)] mb-4">Product Requirements Document</h3>
               <p className="text-text-secondary italic">Waiting for PM data...</p>
-            )}
-          </div>
+            </div>
+          )
         );
       case 'designer':
         return (

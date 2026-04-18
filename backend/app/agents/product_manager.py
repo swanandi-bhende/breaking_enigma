@@ -1,9 +1,11 @@
 """
-Product Manager Agent - Product decision engine.
-Produces complete PRD with user stories in Given/When/Then format.
+Product Manager Agent - Transforms research into complete PRD.
 """
 
 from typing import Dict, Any, List
+import logging
+import asyncio
+import json
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
 
@@ -22,90 +24,22 @@ from app.schemas.research_pm import (
     UserFlowStep,
     ResearchReport,
 )
-from app.utils.chunking import format_prd_for_embedding
+from app.utils.chunking import format_prd_for_embedding, extract_json_from_response
+
+logger = logging.getLogger(__name__)
 
 
-PM_SYSTEM_PROMPT = """You are the Product Manager Agent in an autonomous product development system.
-Your role is to transform research findings into a complete, implementation-ready Product Requirements Document (PRD).
+PM_SYSTEM_PROMPT = """You are the Product Manager. Your job is to transform research insights into a Product Requirements Document (PRD).
 
-## Your Responsibilities:
-1. **Define Product Direction** - What are we building, who is it for, why will they use it
-2. **Pain Point Prioritization** - Rank pain points by severity × frequency × market size
-3. **User Stories Generation** - Full set in "As a [persona], I want to [action] so that [outcome]" format
-4. **Acceptance Criteria** - Specific, testable criteria in Given/When/Then format for every user story
-5. **Solution Design** - Concrete approach mapped to prioritized pain points
-6. **Feature Definition** - Group features as Must-Have (MVP), Should-Have (v1.1), Could-Have (v2.0)
-7. **Budget Estimation** - Rough build cost in engineer-weeks
-8. **Value Projection** - Estimated user value and business value
-9. **Basic User Flow** - High-level step-by-step user journey
+CRITICAL REQUIREMENTS:
+- Respond ONLY with a valid JSON object, nothing else
+- Do NOT include any markdown, code fences, or explanatory text
+- Do NOT include any preamble or closing text
+- All fields MUST be present in the JSON
+- Ensure ALL strings are properly escaped and quoted
+- Ensure ALL arrays and objects are properly closed with correct commas
 
-## Output Requirements:
-- You MUST respond with ONLY a valid JSON object matching the schema below
-- Do NOT include any explanatory text, markdown code fences, or preamble
-- User stories MUST be in Given/When/Then format for acceptance criteria
-- Features MUST map to specific user stories
-
-## PRD Schema:
-```json
-{
-  "product_vision": {
-    "elevator_pitch": "string",
-    "target_user": "string",
-    "core_value_proposition": "string",
-    "success_definition": "string"
-  },
-  "user_stories": [
-    {
-      "id": "US-001",
-      "persona": "string",
-      "action": "string",
-      "outcome": "string",
-      "priority": "must-have|should-have|could-have|wont-have",
-      "acceptance_criteria": [
-        {"given": "string", "when": "string", "then": "string"}
-      ],
-      "estimated_effort": "XS|S|M|L|XL"
-    }
-  ],
-  "features": {
-    "mvp": [
-      {
-        "id": "F-001",
-        "name": "string",
-        "description": "string",
-        "maps_to_user_stories": ["US-001"],
-        "technical_notes": "string"
-      }
-    ],
-    "v1_1": [],
-    "v2_0": []
-  },
-  "budget_estimate": {
-    "mvp_engineer_weeks": 0,
-    "mvp_cost_usd_range": "string",
-    "assumptions": ["string"]
-  },
-  "user_flow": [
-    {
-      "step": 1,
-      "screen_name": "string",
-      "user_action": "string",
-      "system_response": "string",
-      "next_step": 2
-    }
-  ]
-}
-```
-
-## Pain Point Scoring:
-Use this formula: score = severity_weight × frequency_weight × market_size
-- severity_weights: critical=4, high=3, medium=2, low=1
-- frequency_weights: constant=4, frequent=3, occasional=2, rare=1
-- market_size: estimated from TAM
-
-Prioritize high-scoring pain points in MVP features.
-
-Return your complete PRD as a JSON object."""
+Output ONLY the JSON object, starting with { and ending with }."""
 
 
 class ProductManagerAgent:
@@ -116,70 +50,119 @@ class ProductManagerAgent:
             model=settings.OPENAI_MODEL,
             temperature=0.3,
             api_key=settings.OPENAI_API_KEY,
-          base_url=settings.OPENAI_BASE_URL,
+            base_url=settings.OPENAI_BASE_URL,
         )
         self.parser = PydanticOutputParser(pydantic_object=PRD)
         self.max_retries = 3
 
     def _build_prd_prompt(self, research_report: ResearchReport) -> str:
-        """Build the PRD prompt from research report."""
-        report_dict = research_report.dict()
+        """Build concise PRD prompt from research."""
+        r = research_report.dict()
+        problem = r.get("problem_statement", {})
+        market = r.get("market", {})
+        personas = r.get("personas", [])
+        pain_points = r.get("pain_points", [])
+        viability = r.get("viability", {})
+        feasibility = r.get("feasibility", {})
 
-        problem = report_dict.get("problem_statement", {})
-        market = report_dict.get("market", {})
-        personas = report_dict.get("personas", [])
-        pain_points = report_dict.get("pain_points", [])
-        competitors = report_dict.get("competitors", [])
-        viability = report_dict.get("viability", {})
-        feasibility = report_dict.get("feasibility", {})
+        persona_names = ", ".join([p.get('name', '') for p in personas[:3]])
+        top_pains = "\n".join([f"- {pp.get('pain', '')}" for pp in pain_points[:5]])
 
-        prompt = f"""## Research Report Summary
+        schema_example = """{
+  "product_vision": {
+    "elevator_pitch": "One sentence overview",
+    "target_user": "Primary user persona",
+    "core_value_proposition": "Key benefit",
+    "success_definition": "How success is measured"
+  },
+    "user_stories": [
+        {
+            "id": "US-001",
+            "persona": "Persona name",
+            "action": "user action",
+            "outcome": "desired result",
+            "priority": "must-have",
+            "acceptance_criteria": [
+                {"given": "precondition", "when": "action", "then": "result"}
+            ],
+            "estimated_effort": "M"
+        },
+        {
+            "id": "US-002",
+            "persona": "Persona name",
+            "action": "user action",
+            "outcome": "desired result",
+            "priority": "should-have",
+            "acceptance_criteria": [
+                {"given": "precondition", "when": "action", "then": "result"}
+            ],
+            "estimated_effort": "S"
+        },
+        {
+            "id": "US-003",
+            "persona": "Persona name",
+            "action": "user action",
+            "outcome": "desired result",
+            "priority": "could-have",
+            "acceptance_criteria": [
+                {"given": "precondition", "when": "action", "then": "result"}
+            ],
+            "estimated_effort": "XS"
+        }
+    ],
+  "features": {
+    "mvp": [{"id": "F-001", "name": "Feature", "description": "description", "maps_to_user_stories": ["US-001"], "technical_notes": "notes"}],
+    "v1_1": [{"id": "F-002", "name": "Feature", "description": "description", "maps_to_user_stories": ["US-002"], "technical_notes": "notes"}],
+    "v2_0": [{"id": "F-003", "name": "Feature", "description": "description", "maps_to_user_stories": ["US-003"], "technical_notes": "notes"}]
+  },
+  "budget_estimate": {
+    "mvp_engineer_weeks": 4.0,
+    "mvp_cost_usd_range": "$50k-$80k",
+    "assumptions": ["team composition", "use of frameworks"]
+  },
+  "user_flow": [
+        {"step": 1, "screen_name": "Landing", "user_action": "User lands on page", "system_response": "Show onboarding", "next_step": 2},
+        {"step": 2, "screen_name": "Signup", "user_action": "User signs up", "system_response": "Create account", "next_step": 3},
+        {"step": 3, "screen_name": "Dashboard", "user_action": "User views dashboard", "system_response": "Load user data", "next_step": null}
+    ]
+}"""
 
-### Problem Statement:
-{problem.get("core_problem", "")}
-Affected Users: {problem.get("affected_users", "")}
+        prompt = f"""Product Brief:
+Problem: {problem.get('core_problem', '')}
+Affected Users: {problem.get('affected_users', '')}
+Market TAM: ${market.get('tam_usd', 0):,.0f} with {market.get('growth_rate_yoy_percent', 0)}% YoY growth
+Primary Personas: {persona_names}
+Recommended Revenue Model: {viability.get('recommended_model', 'subscription')}
+Estimated MVP Timeline: {feasibility.get('estimated_mvp_weeks', 0)} weeks
 
-### Market:
-Industry: {market.get("industry", "")}
-TAM: ${market.get("tam_usd", 0):,.0f}
-SAM: ${market.get("sam_usd", 0):,.0f}
-SOM: ${market.get("som_usd", 0):,.0f}
-Growth Rate: {market.get("growth_rate_yoy_percent", 0)}% YoY
+Top Pain Points to Address:
+{top_pains}
 
-### Target Personas:
-{chr(10).join([f"- {p.get('name', '')}: {p.get('occupation', '')}" for p in personas])}
+Create a Product Requirements Document (PRD) in JSON format matching this schema:
+{schema_example}
 
-### Pain Points (to address in MVP):
-{chr(10).join([f"- {pp.get('pain', '')} (Severity: {pp.get('severity', '')}, Freq: {pp.get('frequency', '')})" for pp in pain_points[:5]])}
+Requirements:
+1. Include at least 5 user stories with proper Given/When/Then acceptance criteria
+2. Map all features to user stories
+3. Provide realistic engineering estimates
+4. Group features into MVP, v1.1, and v2.0 phases
+5. Create a complete user flow of 5-7 steps
 
-### Competitors:
-{chr(10).join([f"- {c.get('name', '')}: {c.get('positioning', '')}" for c in competitors[:3]])}
-
-### Viability:
-Recommended Revenue Model: {viability.get("recommended_model", "")}
-Viability Score: {viability.get("viability_score", 0)}/10
-
-### Feasibility:
-Complexity: {feasibility.get("complexity", "")}
-Estimated MVP Weeks: {feasibility.get("estimated_mvp_weeks", 0)}
-
----
-
-Now create a comprehensive PRD based on this research.
-{self.parser.get_format_instructions()}"""
+IMPORTANT FORMAT REQUIREMENTS:
+- User story IDs must follow the pattern: US-001, US-002, US-003 (US- followed by exactly 3 digits)
+- User story priorities MUST be exactly one of: "must-have", "should-have", "could-have", or "wont-have"
+- User story effort estimates MUST be exactly one of: "XS", "S", "M", "L", or "XL"
+- Feature IDs should follow the pattern: F-001, F-002, F-003
+- User flow steps must be sequential from 1, with the final step having next_step: null
+- Keep field names snake_case exactly as shown in schema"""
 
         return prompt
 
     async def run(self, input_data: PMAgentInput | Dict[str, Any]) -> PMAgentOutput:
-        """
-        Execute the PM Agent.
-
-        Args:
-            input_data: PMAgentInput with run_id and research_report
-
-        Returns:
-            PMAgentOutput with complete PRD
-        """
+        """Execute PM Agent with exponential backoff for rate limits."""
+        import asyncio
+        import json
+        
         if isinstance(input_data, dict):
             input_data = PMAgentInput.model_validate(input_data)
 
@@ -197,15 +180,89 @@ Now create a comprehensive PRD based on this research.
                         ("human", prompt),
                     ]
                 )
-                result = self.parser.parse(response.content)
+                
+                # Extract and parse JSON with multiple fallback strategies
+                response_content = response.content
+                logger.info(f"[product_manager] Raw response length: {len(response_content)} chars")
+                
+                json_obj = None
+                
+                # Strategy 1: Try extract_json_from_response
+                try:
+                    json_obj = extract_json_from_response(response_content)
+                    logger.info(f"[product_manager] Successfully parsed JSON using extract_json_from_response")
+                except Exception as e1:
+                    logger.warning(f"[product_manager] extract_json_from_response failed: {str(e1)[:100]}")
+                    
+                    # Strategy 2: Try direct JSON parsing
+                    try:
+                        json_obj = json.loads(response_content.strip())
+                        logger.info(f"[product_manager] Successfully parsed JSON using direct parsing")
+                    except Exception as e2:
+                        logger.warning(f"[product_manager] Direct JSON parsing failed: {str(e2)[:100]}")
+                        
+                        # Strategy 3: Find and extract JSON object
+                        try:
+                            import re
+                            # Find the first { and last } to extract potential JSON
+                            start_idx = response_content.find('{')
+                            end_idx = response_content.rfind('}')
+                            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                                potential_json = response_content[start_idx:end_idx+1]
+                                json_obj = json.loads(potential_json)
+                                logger.info(f"[product_manager] Successfully parsed JSON using bracket extraction")
+                            else:
+                                raise ValueError("Could not find JSON brackets in response")
+                        except Exception as e3:
+                            logger.error(f"[product_manager] Bracket extraction failed: {str(e3)[:100]}")
+                            raise ValueError(f"Could not parse JSON from response after all strategies: {e1}")
+                
+                if json_obj is None:
+                    raise ValueError("JSON parsing returned None")
+                
+                # Validate required fields
+ 
+                required_fields = ["product_vision", "user_stories", "features", "budget_estimate", "user_flow"]
+                missing_fields = [f for f in required_fields if f not in json_obj]
+                if missing_fields:
+                    raise ValueError(f"Missing fields: {missing_fields}")
+                
+                # Validate user stories and user flow
+                if len(json_obj.get("user_stories", [])) < 3:
+                    raise ValueError(f"Need at least 3 user stories, got {len(json_obj.get('user_stories', []))}")
+                
+                if len(json_obj.get("user_flow", [])) < 3:
+                    raise ValueError(f"Need at least 3 user flow steps, got {len(json_obj.get('user_flow', []))}")
+                
+                logger.info(f"[product_manager] JSON validation passed, creating PRD")
+                try:
+                    result = PRD(**json_obj)
+                except Exception as validation_error:
+                    logger.error(f"[product_manager] Pydantic validation error: {str(validation_error)[:500]}")
+                    logger.error(f"[product_manager] Full JSON keys: {list(json_obj.keys())}")
+                    raise
 
                 await self._store_embeddings(run_id, result.dict())
 
+                logger.info(f"[product_manager] Generated PRD with {len(result.user_stories)} user stories")
                 return PMAgentOutput(run_id=run_id, prd=result)
 
             except Exception as e:
+                error_str = str(e)
                 last_error = e
+                logger.error(f"[product_manager] Attempt {attempt+1}/{self.max_retries} failed: {error_str[:200]}")
+                
+                # Handle rate limit with exponential backoff
+                if "rate_limit_exceeded" in error_str or "429" in error_str:
+                    wait_time = min(2 ** attempt * 10, 120)
+                    logger.warning(f"[product_manager] Rate limit, waiting {wait_time}s before retry {attempt+1}/{self.max_retries}")
+                    if attempt < self.max_retries - 1:
+                        await asyncio.sleep(wait_time)
+                        continue
+                
+                # Retry on other errors
                 if attempt < self.max_retries - 1:
+                    await asyncio.sleep(2)
                     continue
 
         raise Exception(
