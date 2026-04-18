@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-base:        #0A0A0F;
+  --surface:        #111118;
+  --surface-hover:  #1A1A24;
+  --border:         #2A2A3A;
+  --accent:         #00FF88;
+  --accent-dim:     #00FF8833;
+  --warning:        #F59E0B;
+  --error:          #EF4444;
+  --success:        #10B981;
+  --text-primary:   #F0F0F8;
+  --text-secondary: #8888AA;
+  --text-code:      #A8FF78;
+
+  --agent-research:   #3B82F6;
+  --agent-pm:         #8B5CF6;
+  --agent-designer:   #EC4899;
+  --agent-developer:  #06B6D4;
+  --agent-qa:         #F59E0B;
+  --agent-devops:     #F97316;
+  --agent-docs:       #10B981;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+}
+
+@layer utilities {
+  .animate-agent-pulse {
+    animation: agentPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  .animate-type-in {
+    animation: typeIn 0.3s ease-out forwards;
+  }
+  .animate-field-flash {
+    animation: fieldFlash 1s ease-out forwards;
+  }
+  .animate-routing-arrow {
+    animation: routingArrow 1.5s ease-out forwards;
+  }
+}
+
+@keyframes agentPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-dim); }
+  50%       { box-shadow: 0 0 20px 8px var(--accent-dim); }
+}
+
+@keyframes typeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fieldFlash {
+  0%   { background-color: #F59E0B33; }
+  100% { background-color: transparent; }
+}
+
+@keyframes routingArrow {
+  0%   { stroke-dashoffset: 100; opacity: 0; }
+  30%  { opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 1; }
+}
