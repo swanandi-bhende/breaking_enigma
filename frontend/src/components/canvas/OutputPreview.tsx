@@ -2,6 +2,7 @@
 import React from 'react';
 import { usePipelineStore } from '@/store/pipelineStore';
 import DesignerPanel from '@/components/canvas/DesignerPanel';
+import DeveloperPanel from '@/components/canvas/DeveloperPanel';
 import PRDPanel from '@/components/canvas/PRDPanel';
 
 function formatCurrency(value: number | null | undefined): string {
@@ -218,16 +219,12 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
         );
       case 'developer':
         return (
-          <div className="bg-surface border border-border rounded-lg p-6">
-            <h3 className="text-lg font-bold text-[var(--agent-developer)] mb-4">Code Generation</h3>
-            {payload ? (
-              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap">
-                {JSON.stringify(payload, null, 2)}
-              </pre>
-            ) : (
+          payload ? <DeveloperPanel payload={payload} /> : (
+            <div className="bg-surface border border-border rounded-lg p-6">
+              <h3 className="text-lg font-bold text-[var(--agent-developer)] mb-4">Developer Output</h3>
               <p className="text-text-secondary italic">Waiting for developer output...</p>
-            )}
-          </div>
+            </div>
+          )
         );
       case 'qa':
         return (

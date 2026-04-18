@@ -56,6 +56,20 @@ Rules:
 """
 
 
+def _fallback_brief(idea: str, target_platform_hint: str) -> Dict[str, Any]:
+    short_title = " ".join(idea.strip().split()[:4]).strip()
+    if not short_title:
+        short_title = "Generated Product"
+    allowed_platforms = {"web", "mobile", "api-only"}
+    platform = target_platform_hint if target_platform_hint in allowed_platforms else "web"
+    return {
+        "title": short_title[:50],
+        "normalized_idea": idea.strip() or "Build a useful software product for target users.",
+        "domain": "General Software",
+        "target_platform": platform,
+    }
+
+
 async def _normalise_idea(
     idea: str,
     target_platform_hint: str,
@@ -72,19 +86,18 @@ async def _normalise_idea(
     user_prompt = f'Product idea: "{idea}"\nHint — target platform: {target_platform_hint}'
 
     for attempt in range(1, 4):
-        response = await client.chat.completions.create(
-            model=llm_model,
-            messages=[
-                {"role": "system", "content": _NORMALISE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,
-            response_format={"type": "json_object"},
-        )
-        raw = response.choices[0].message.content or "{}"
         try:
+            response = await client.chat.completions.create(
+                model=llm_model,
+                messages=[
+                    {"role": "system", "content": _NORMALISE_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content or "{}"
             brief_dict = json.loads(raw)
-            # Basic sanity check — ensure required keys exist
             required = {"title", "normalized_idea", "domain", "target_platform"}
             if not required.issubset(brief_dict.keys()):
                 raise ValueError(f"Missing keys: {required - brief_dict.keys()}")
@@ -93,17 +106,14 @@ async def _normalise_idea(
             logger.warning(
                 "[orchestrator] Attempt %d: failed to parse brief JSON: %s", attempt, exc
             )
-            if attempt == 3:
-                # Fallback — construct best-effort brief without LLM
-                logger.error("[orchestrator] All attempts failed — using fallback brief")
-                return {
-                    "title": idea[:50],
-                    "normalized_idea": idea,
-                    "domain": "General Software",
-                    "target_platform": target_platform_hint,
-                }
+        except Exception as exc:
+            logger.warning("[orchestrator] Attempt %d: LLM call failed: %s", attempt, str(exc)[:220])
 
-    return {}  # unreachable but satisfies type checker
+        if attempt == 3:
+            logger.error("[orchestrator] All attempts failed — using fallback brief")
+            return _fallback_brief(idea, target_platform_hint)
+
+    return _fallback_brief(idea, target_platform_hint)
 
 
 async def _init_pipeline_run(run_id: str, state: PipelineState) -> None:

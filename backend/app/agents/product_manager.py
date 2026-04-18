@@ -42,6 +42,169 @@ CRITICAL REQUIREMENTS:
 Output ONLY the JSON object, starting with { and ending with }."""
 
 
+def _fallback_prd(research_report: ResearchReport) -> PRD:
+    """Build a valid deterministic PRD when LLM calls are unavailable."""
+    problem = research_report.problem_statement
+    personas = research_report.personas or []
+    primary_persona = personas[0].name if personas else "Target User"
+    secondary_persona = personas[1].name if len(personas) > 1 else primary_persona
+
+    product_vision = ProductVision(
+        elevator_pitch=problem.core_problem,
+        target_user=primary_persona,
+        core_value_proposition="Deliver clear daily workflows, progress visibility, and actionable recommendations.",
+        success_definition="Users complete core tasks consistently and report measurable outcome improvements within 30 days.",
+    )
+
+    user_stories = [
+        UserStory(
+            id="US-001",
+            persona=primary_persona,
+            action="create an account and onboarding profile",
+            outcome="receive a personalized starting plan",
+            priority="must-have",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    given="a new visitor opens the app",
+                    when="they submit onboarding details",
+                    then="the system creates a profile and displays a personalized plan",
+                )
+            ],
+            estimated_effort="M",
+        ),
+        UserStory(
+            id="US-002",
+            persona=primary_persona,
+            action="log daily activity and progress",
+            outcome="track consistency and trend improvements",
+            priority="must-have",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    given="an authenticated user is on dashboard",
+                    when="they submit a daily log",
+                    then="the entry is saved and reflected in progress charts",
+                )
+            ],
+            estimated_effort="M",
+        ),
+        UserStory(
+            id="US-003",
+            persona=secondary_persona,
+            action="view weekly summary insights",
+            outcome="understand what is working and what needs adjustment",
+            priority="should-have",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    given="at least 7 days of activity data",
+                    when="the user opens weekly insights",
+                    then="the system shows trends, highlights, and recommendations",
+                )
+            ],
+            estimated_effort="S",
+        ),
+        UserStory(
+            id="US-004",
+            persona=primary_persona,
+            action="set reminders and goals",
+            outcome="stay accountable and improve adherence",
+            priority="should-have",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    given="a user configures goal preferences",
+                    when="a reminder schedule is saved",
+                    then="the user receives reminders at configured intervals",
+                )
+            ],
+            estimated_effort="S",
+        ),
+        UserStory(
+            id="US-005",
+            persona=secondary_persona,
+            action="share progress with peers",
+            outcome="increase motivation through social accountability",
+            priority="could-have",
+            acceptance_criteria=[
+                AcceptanceCriterion(
+                    given="a user has progress data",
+                    when="they choose a sharing option",
+                    then="a summary card is generated and shared safely",
+                )
+            ],
+            estimated_effort="M",
+        ),
+    ]
+
+    features = Features(
+        mvp=[
+            Feature(
+                id="F-001",
+                name="Onboarding and Profile",
+                description="Capture preferences and generate personalized plan baseline.",
+                maps_to_user_stories=["US-001"],
+                technical_notes="Store profile preferences and defaults in typed schema.",
+            ),
+            Feature(
+                id="F-002",
+                name="Daily Tracking",
+                description="Allow users to log activity and monitor daily consistency.",
+                maps_to_user_stories=["US-002"],
+                technical_notes="Implement idempotent create/update operations for logs.",
+            ),
+            Feature(
+                id="F-003",
+                name="Weekly Insights",
+                description="Summarize trends and recommendation highlights.",
+                maps_to_user_stories=["US-003"],
+                technical_notes="Precompute aggregates for dashboard responsiveness.",
+            ),
+        ],
+        v1_1=[
+            Feature(
+                id="F-004",
+                name="Goals and Reminders",
+                description="Enable configurable goals, reminders, and streak support.",
+                maps_to_user_stories=["US-004"],
+                technical_notes="Notification delivery with retry and timezone support.",
+            )
+        ],
+        v2_0=[
+            Feature(
+                id="F-005",
+                name="Social Sharing",
+                description="Share progress summaries with peers and accountability groups.",
+                maps_to_user_stories=["US-005"],
+                technical_notes="Apply privacy controls and scoped sharing tokens.",
+            )
+        ],
+    )
+
+    budget = BudgetEstimate(
+        mvp_engineer_weeks=6.0,
+        mvp_cost_usd_range="$45k-$80k",
+        assumptions=[
+            "Small full-stack team with shared infrastructure",
+            "Reusing existing auth and deployment foundation",
+            "One target platform for MVP with progressive enhancement",
+        ],
+    )
+
+    user_flow = [
+        UserFlowStep(step=1, screen_name="Landing", user_action="Open app", system_response="Display value proposition and CTA", next_step=2),
+        UserFlowStep(step=2, screen_name="Signup", user_action="Create account", system_response="Provision user profile", next_step=3),
+        UserFlowStep(step=3, screen_name="Onboarding", user_action="Submit goals/preferences", system_response="Generate initial plan", next_step=4),
+        UserFlowStep(step=4, screen_name="Dashboard", user_action="Log daily activity", system_response="Persist logs and refresh insights", next_step=5),
+        UserFlowStep(step=5, screen_name="Insights", user_action="Review weekly progress", system_response="Render trends and recommendations", next_step=None),
+    ]
+
+    return PRD(
+        product_vision=product_vision,
+        user_stories=user_stories,
+        features=features,
+        budget_estimate=budget,
+        user_flow=user_flow,
+    )
+
+
 class ProductManagerAgent:
     """PM Agent for PRD generation from research report."""
 
@@ -265,9 +428,13 @@ IMPORTANT FORMAT REQUIREMENTS:
                     await asyncio.sleep(2)
                     continue
 
-        raise Exception(
-            f"PM Agent failed after {self.max_retries} attempts: {last_error}"
+        logger.error(
+            "[product_manager] Exhausted retries, returning deterministic fallback PRD: %s",
+            str(last_error)[:300],
         )
+        fallback_prd = _fallback_prd(research_report)
+        await self._store_embeddings(run_id, fallback_prd.dict())
+        return PMAgentOutput(run_id=run_id, prd=fallback_prd)
 
     async def _store_embeddings(self, run_id: str, prd: Dict[str, Any]) -> None:
         """Store PRD user stories in Qdrant for QA traceability."""
