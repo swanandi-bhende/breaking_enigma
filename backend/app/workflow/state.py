@@ -74,6 +74,9 @@ class PipelineState(TypedDict):
     docs_output: Optional[Dict[str, Any]]
     """Full DocumentationAgentOutput object."""
 
+    devops_output: Optional[Dict[str, Any]]
+    """Full DevOpsAgentOutput object."""
+
     # ── QA Loop Control ──────────────────────────────────────────────────────
     qa_iteration: int
     """Current QA iteration count (starts at 0, increments on each FAIL)."""
@@ -140,6 +143,7 @@ def initial_state(
         qa_output=None,
         remediation_output=None,
         docs_output=None,
+        devops_output=None,
         qa_iteration=0,
         max_qa_iterations=cfg.get("max_qa_iterations", 3),
         artifact_urls={},

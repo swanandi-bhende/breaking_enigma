@@ -193,6 +193,16 @@ async def _execute_pipeline(
 
         try:
             run_store = get_run_store(run_id=run_id, config=config)
+            fallback_docs = {
+                "run_id": run_id,
+                "documents": {
+                    "README.md": (
+                        "# Demo Documentation\n\n"
+                        "The pipeline encountered an upstream provider failure before full completion.\n\n"
+                        "This fallback markdown file is intentionally emitted so the documentation panel can render at least one document in demo mode.\n"
+                    )
+                },
+            }
             await run_store.finalize_run(
                 run_id=run_id,
                 final_state={
@@ -201,6 +211,7 @@ async def _execute_pipeline(
                     "config": config or {},
                     "run_state": "FAILED",
                     "error": str(exc),
+                    "docs_output": fallback_docs,
                 },
             )
             clear_run_store(run_id)

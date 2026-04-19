@@ -432,6 +432,40 @@ def _to_plain_dict(value: Any) -> Dict[str, Any]:
   return {}
 
 
+def _normalize_design_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+  """Coerce common model-output mismatches into schema-compatible shapes."""
+  normalized = dict(payload) if isinstance(payload, dict) else {}
+
+  system_arch = normalized.get("system_architecture")
+  if isinstance(system_arch, dict):
+    comm = system_arch.get("communication_patterns")
+    if isinstance(comm, dict):
+      # The schema requires Dict[str, str]; some providers emit booleans/numbers.
+      system_arch["communication_patterns"] = {
+        str(key): "" if value is None else str(value)
+        for key, value in comm.items()
+      }
+
+  for endpoint in normalized.get("api_spec", []) if isinstance(normalized.get("api_spec"), list) else []:
+    if not isinstance(endpoint, dict):
+      continue
+    request_body = endpoint.get("request_body")
+    if isinstance(request_body, dict):
+      if "schema" in request_body and "request_schema" not in request_body:
+        request_body["request_schema"] = request_body.get("schema")
+
+    responses = endpoint.get("responses")
+    if isinstance(responses, dict):
+      for key, response in list(responses.items()):
+        if not isinstance(response, dict):
+          continue
+        if "schema" in response and "response_schema" not in response:
+          response["response_schema"] = response.get("schema")
+        responses[str(key)] = response
+
+  return normalized
+
+
 def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
   prd_dict = _to_plain_dict(prd)
   product_vision = prd_dict.get("product_vision", {}) if isinstance(prd_dict.get("product_vision", {}), dict) else {}
@@ -863,7 +897,7 @@ class DesignerAgent:
           base_url=base_url,
           max_retries=0,
       )
-      self.max_retries = 5
+      self.max_retries = 3
       self.fallback_enabled = bool(settings.GEMINI_API_KEY)
 
     async def _retrieve_research_context(
@@ -905,7 +939,7 @@ class DesignerAgent:
         if research_context:
             context_section = f"""
 ## Research Context (from RAG):
-{chr(10).join([f"- {ctx}" for ctx in research_context[:3]])}
+    {chr(10).join([f"- {ctx[:280]}" for ctx in research_context[:2]])}
 
 Use this context to inform your design decisions.
 """
@@ -918,7 +952,7 @@ Use this context to inform your design decisions.
                 chr(10).join(
                     [
                         f"- {us.get('id', f'US-{i:03d}')}: {us.get('action', '')} so that {us.get('outcome', '')}"
-                        for i, us in enumerate(user_stories[:10])
+                for i, us in enumerate(user_stories[:5])
                     ]
                 )
             }
@@ -944,7 +978,7 @@ Design screens and APIs to support these features.
                 chr(10).join(
                     [
                         f"Step {step.get('step', i + 1)}: {step.get('screen_name', '')} - {step.get('user_action', '')}"
-                        for i, step in enumerate(user_flow)
+                for i, step in enumerate(user_flow[:4])
                     ]
                 )
             }
@@ -959,8 +993,15 @@ Design screens and APIs to support these features.
 {features_section}
 {user_flow_section}
 
-Now create the complete design specification.
-Return only a valid JSON object matching the specified design_spec schema."""
+Generate a concise design_spec for MVP only.
+Hard limits:
+- max 3 screens
+- max 3 interaction_flows
+- max 5 api_spec endpoints
+- max 3 data_models
+- keep descriptions short and specific
+
+Return only a valid JSON object matching the design_spec schema."""
 
         return prompt
 
@@ -1010,7 +1051,8 @@ Return only a valid JSON object matching the specified design_spec schema."""
                 raw_content = (response.choices[0].message.content or "").strip()
                 parsed = _extract_json_object(raw_content)
                 spec_payload = parsed.get("design_spec") if isinstance(parsed.get("design_spec"), dict) else parsed
-                result = DesignSpec.model_validate(spec_payload)
+                normalized_payload = _normalize_design_payload(spec_payload if isinstance(spec_payload, dict) else {})
+                result = DesignSpec.model_validate(normalized_payload)
 
                 logger.info(
                     "[designer] generated design_spec via llm with screens=%s flows=%s apis=%s",
@@ -1031,14 +1073,14 @@ Return only a valid JSON object matching the specified design_spec schema."""
                     # Daily quota exhaustion won't recover quickly; hand over to Gemini at wrapper level.
                     raise RuntimeError(f"GROQ_DAILY_QUOTA_EXCEEDED: {e}") from e
                 if attempt < self.max_retries - 1:
-                    if _is_quota_or_rate_limit_error(e):
-                        retry_after = _extract_retry_after_seconds(e)
-                        wait_seconds = 30.0 if retry_after is None else min(retry_after + 1.0, 45.0)
-                        logger.warning("[designer] quota/rate-limit detected; sleeping for %.1fs", wait_seconds)
-                        await asyncio.sleep(wait_seconds)
-                    else:
-                        await asyncio.sleep(5.0)
-                    continue
+                  if _is_quota_or_rate_limit_error(e):
+                    retry_after = _extract_retry_after_seconds(e)
+                    wait_seconds = 2.0 if retry_after is None else min(retry_after + 0.5, 6.0)
+                    logger.warning("[designer] quota/rate-limit detected; sleeping for %.1fs", wait_seconds)
+                    await asyncio.sleep(wait_seconds)
+                  else:
+                    await asyncio.sleep(1.0)
+                  continue
 
         raise Exception(
             f"Designer Agent failed after {self.max_retries} attempts: {last_error}"
@@ -1061,9 +1103,9 @@ async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) ->
     try:
       output = await agent.run(input_data)
     except Exception as groq_error:
-      if settings.GEMINI_API_KEY and _is_quota_or_rate_limit_error(groq_error):
+      if settings.GEMINI_API_KEY:
         logger.warning(
-          "[designer] Groq failed due to quota/rate-limit; retrying with Gemini. run_id=%s error=%s",
+          "[designer] Groq failed; retrying with Gemini. run_id=%s error=%s",
           run_id,
           str(groq_error)[:250],
         )

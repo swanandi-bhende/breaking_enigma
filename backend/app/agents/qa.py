@@ -1,6 +1,18 @@
 import logging
+import json
 from typing import Any, Dict, List, Tuple
 
+try:
+    import json_repair
+except Exception:  # pragma: no cover
+    json_repair = None
+
+try:
+    from langchain_openai import ChatOpenAI
+except Exception:  # pragma: no cover
+    ChatOpenAI = None
+
+from app.core.config import settings
 from app.schemas.agents import (
     BugOwner,
     BugSeverity,
@@ -14,12 +26,171 @@ from app.workflow.qa_scoring import calculate_weighted_qa_score, determine_qa_ve
 logger = logging.getLogger(__name__)
 
 
+QA_LLM_SYSTEM_PROMPT = """You are a senior QA lead.
+Evaluate implementation quality from PRD + design spec + developer output.
+
+Rules:
+1. Return ONLY valid JSON.
+2. Use schema exactly.
+3. Prefer concrete findings tied to files/endpoints/screens.
+4. Do not fabricate files not present in input.
+
+Schema:
+{
+    "verdict": "PASS|FAIL",
+    "qa_score": 0-100,
+    "must_have_coverage_percent": 0-100,
+    "critical_bugs_count": 0,
+    "cross_document_issues": [
+        {
+            "issue_id": "XDOC-001",
+            "severity": "critical|high|medium|low",
+            "description": "...",
+            "source_documents": ["Designer", "Developer"],
+            "owner": "developer|designer|system_architect|product_manager|orchestrator|qa",
+            "fix_instruction": "..."
+        }
+    ],
+    "journey_simulations": [
+        {
+            "journey_id": "J-001",
+            "journey_name": "...",
+            "completion_status": "PASS|FAIL",
+            "completion_percent": 0-100,
+            "blocked_at_step": 1,
+            "notes": "...",
+            "steps": [{"step": 1, "action": "...", "status": "PASS|FAIL", "reason": "..."}]
+        }
+    ],
+    "bugs": [
+        {
+            "bug_id": "QA-001",
+            "severity": "critical|high|medium|low",
+            "title": "...",
+            "description": "...",
+            "affected_file": "...",
+            "affected_user_story": "US-001",
+            "root_cause_phase": "developer|designer|system_architect|product_manager|orchestrator|qa",
+            "fix_owner": "developer|designer|system_architect|product_manager|orchestrator|qa",
+            "reproduction_steps": ["..."],
+            "suggested_fix": "...",
+            "status": "open|in_progress|resolved|wont_fix"
+        }
+    ],
+    "routing_decision": {
+        "route_to": "developer|devops_and_docs|human_review",
+        "reason": "...",
+        "fix_instructions": [{"bug_id": "...", "owner": "developer", "instruction": "..."}]
+    },
+    "score_breakdown": {
+        "feature_coverage": 0-100,
+        "consistency": 0-100,
+        "journey_completion": 0-100,
+        "code_quality": 0-100,
+        "weighted_total": 0-100
+    }
+}
+"""
+
+
 SEVERITY_PENALTY = {
     BugSeverity.CRITICAL.value: 30,
     BugSeverity.HIGH.value: 18,
     BugSeverity.MEDIUM.value: 8,
     BugSeverity.LOW.value: 3,
 }
+
+
+def _extract_json_object(raw: str) -> Dict[str, Any]:
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("empty qa llm response")
+
+    if json_repair is not None:
+        try:
+            parsed = json_repair.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+
+    parsed = json.loads(text)
+    if isinstance(parsed, dict):
+        return parsed
+    raise ValueError("qa llm output is not a json object")
+
+
+def _clamp_score(value: Any, default: float) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return default
+    return max(0.0, min(100.0, round(number, 2)))
+
+
+def _llm_provider_configs() -> List[Dict[str, str]]:
+    providers: List[Dict[str, str]] = []
+    if settings.OPENAI_API_KEY:
+        providers.append(
+            {
+                "name": "groq",
+                "api_key": settings.OPENAI_API_KEY,
+                "base_url": settings.OPENAI_BASE_URL,
+                "model": settings.OPENAI_MODEL,
+            }
+        )
+    if settings.GEMINI_API_KEY:
+        providers.append(
+            {
+                "name": "gemini",
+                "api_key": settings.GEMINI_API_KEY,
+                "base_url": settings.GEMINI_BASE_URL,
+                "model": settings.GEMINI_MODEL,
+            }
+        )
+    return providers
+
+
+async def _evaluate_with_llm(input_data: QAAgentInput, max_iterations_reached: bool) -> Dict[str, Any] | None:
+    if ChatOpenAI is None:
+        return None
+
+    payload = {
+        "run_id": str(input_data.run_id),
+        "iteration": input_data.iteration,
+        "max_iterations": input_data.max_iterations,
+        "max_iterations_reached": max_iterations_reached,
+        "prd": input_data.prd.model_dump(mode="json"),
+        "design_spec": input_data.design_spec.model_dump(mode="json"),
+        "developer_output": input_data.developer_output.model_dump(mode="json"),
+    }
+
+    prompt = (
+        "Evaluate this run and return strict JSON using the required schema.\n"
+        "Focus on real issues only and route to devops_and_docs when quality is acceptable.\n"
+        f"INPUT: {json.dumps(payload, ensure_ascii=True)}"
+    )
+
+    for provider in _llm_provider_configs():
+        try:
+            llm = ChatOpenAI(
+                model=provider["model"],
+                api_key=provider["api_key"],
+                base_url=provider["base_url"],
+                temperature=0.1,
+                max_retries=1,
+            )
+            response = await llm.ainvoke([
+                ("system", QA_LLM_SYSTEM_PROMPT),
+                ("human", prompt),
+            ])
+            parsed = _extract_json_object(response.content)
+            logger.info("[qa] llm evaluation succeeded provider=%s run_id=%s", provider["name"], str(input_data.run_id))
+            return parsed
+        except Exception as exc:
+            logger.warning("[qa] llm evaluation failed provider=%s run_id=%s error=%s", provider["name"], str(input_data.run_id), str(exc)[:250])
+
+    return None
 
 
 def _contains_any(text: str, tokens: List[str]) -> bool:
@@ -459,6 +630,55 @@ async def run_qa_agent(input_data: QAAgentInput | Dict[str, Any]) -> Dict[str, A
         bugs=bugs,
         max_iterations_reached=max_iterations_reached,
     )
+
+    llm_eval = await _evaluate_with_llm(input_data, max_iterations_reached)
+    if isinstance(llm_eval, dict):
+        llm_bugs = llm_eval.get("bugs", [])
+        if isinstance(llm_bugs, list):
+            bugs = [item for item in llm_bugs if isinstance(item, dict)]
+
+        llm_issues = llm_eval.get("cross_document_issues", [])
+        if isinstance(llm_issues, list):
+            cross_document_issues = [item for item in llm_issues if isinstance(item, dict)]
+
+        llm_journeys = llm_eval.get("journey_simulations", [])
+        if isinstance(llm_journeys, list):
+            journey_simulations = [item for item in llm_journeys if isinstance(item, dict)]
+
+        weighted_score = _clamp_score(llm_eval.get("qa_score"), weighted_score)
+        coverage_percent = _clamp_score(llm_eval.get("must_have_coverage_percent"), coverage_percent)
+
+        route_payload = llm_eval.get("routing_decision", {}) if isinstance(llm_eval.get("routing_decision", {}), dict) else {}
+        route_to = str(route_payload.get("route_to", verdict_data.get("route_to", "developer"))).lower()
+        if route_to not in {"developer", "devops_and_docs", "human_review"}:
+            route_to = verdict_data.get("route_to", "developer")
+
+        verdict = str(llm_eval.get("verdict", verdict_data.get("verdict", "FAIL"))).upper()
+        if verdict not in {"PASS", "FAIL"}:
+            verdict = verdict_data.get("verdict", "FAIL")
+
+        critical_count = sum(
+            1
+            for bug in bugs
+            if str(bug.get("status", "open")).lower() in {"open", "in_progress"}
+            and str(bug.get("severity", "")).lower() == "critical"
+        )
+
+        verdict_data = {
+            **verdict_data,
+            "verdict": verdict,
+            "route_to": route_to,
+            "critical_bugs_count": critical_count,
+            "must_have_coverage_percent": coverage_percent,
+            "reason": str(route_payload.get("reason") or llm_eval.get("reason") or verdict_data.get("reason", "QA routing decision computed.")),
+        }
+
+        llm_breakdown = llm_eval.get("score_breakdown", {}) if isinstance(llm_eval.get("score_breakdown", {}), dict) else {}
+        feature_cov = _clamp_score(llm_breakdown.get("feature_coverage"), coverage_percent)
+        consistency_score = _clamp_score(llm_breakdown.get("consistency"), consistency_score)
+        journey_score = _clamp_score(llm_breakdown.get("journey_completion"), journey_score)
+        code_quality_score = _clamp_score(llm_breakdown.get("code_quality"), code_quality_score)
+        weighted_score = _clamp_score(llm_breakdown.get("weighted_total"), weighted_score)
 
     route_to = verdict_data["route_to"]
     fix_instructions = [

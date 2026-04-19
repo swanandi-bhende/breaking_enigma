@@ -78,6 +78,27 @@ class Settings(BaseSettings):
         # Accept comma-separated string; keep raw for property below
         return v
 
+    @field_validator("OPENAI_API_KEY", "GEMINI_API_KEY", mode="before")
+    @classmethod
+    def sanitize_api_keys(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        text = str(v).strip()
+        if not text:
+            return None
+        # Allow inline comments in .env while keeping only the credential token.
+        if " #" in text:
+            text = text.split(" #", 1)[0].strip()
+        return text
+
+    @field_validator("OPENAI_BASE_URL", "GEMINI_BASE_URL", mode="before")
+    @classmethod
+    def sanitize_base_urls(cls, v: str) -> str:
+        text = str(v).strip()
+        if " #" in text:
+            text = text.split(" #", 1)[0].strip()
+        return text.rstrip("/")
+
     @property
     def cors_origins_list(self) -> List[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]

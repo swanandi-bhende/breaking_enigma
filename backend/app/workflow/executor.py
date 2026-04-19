@@ -115,6 +115,46 @@ class AgentMaxRetriesError(RuntimeError):
 # ── Input / Output Validation ────────────────────────────────────────────────
 
 
+async def _persist_agent_run(
+    run_store,
+    *,
+    run_id,
+    agent_name: str,
+    iteration: int,
+    input_payload: Dict[str, Any],
+    output_payload: Dict[str, Any] | None,
+    status: str,
+    duration_ms: int,
+    error_details: Dict[str, Any] | None = None,
+) -> None:
+    await run_store.append_agent_result(
+        run_id=run_id,
+        agent_name=agent_name,
+        iteration=iteration,
+        input_payload=input_payload,
+        output_payload=output_payload,
+        status=status,
+        duration_ms=duration_ms,
+        error_details=error_details,
+    )
+
+
+async def _persist_artifact(
+    run_store,
+    *,
+    run_id,
+    artifact_type: str,
+    content: Dict[str, Any],
+    version: int,
+) -> None:
+    await run_store.append_artifact(
+        run_id=run_id,
+        artifact_type=artifact_type,
+        content=content,
+        version=version,
+    )
+
+
 def validate_agent_input(agent_name: str, raw_input: Dict[str, Any]) -> BaseModel:
     """
     Validate `raw_input` against the registered Pydantic input schema
@@ -260,7 +300,8 @@ async def agent_executor(
 
         # ── 6. Persist to PostgreSQL ─────────────────────────────────────────
         duration_ms = int((time.monotonic() - start_ts) * 1000)
-        await run_store.append_agent_result(
+        await _persist_agent_run(
+            run_store,
             run_id=run_id,
             agent_name=agent_name,
             iteration=iteration,
@@ -269,7 +310,8 @@ async def agent_executor(
             status="COMPLETE",
             duration_ms=duration_ms,
         )
-        await run_store.append_artifact(
+        await _persist_artifact(
+            run_store,
             run_id=run_id,
             artifact_type=f"{agent_name}_output",
             content=output_dict,
@@ -316,7 +358,8 @@ async def agent_executor(
         )
         await publish_log_line(run_id, agent_name, f"[{agent_name}] FAILED: {error_msg}", level=LogLevel.ERROR)
 
-        await run_store.append_agent_result(
+        await _persist_agent_run(
+            run_store,
             run_id=run_id,
             agent_name=agent_name,
             iteration=iteration,
@@ -423,7 +466,7 @@ def _extract_input(agent_name: str, state: PipelineState) -> Dict[str, Any]:
             "design_spec": state["design_spec"],
             "developer_output": state["developer_output"],
             "qa_output": state["qa_output"],
-            "devops_output": None,
+            "devops_output": state.get("devops_output"),
         }
 
     raise ValueError(f"No input extractor defined for agent '{agent_name}'.")

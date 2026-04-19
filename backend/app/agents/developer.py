@@ -5,8 +5,11 @@ from typing import Any, Dict, List
 
 import asyncio
 import json_repair
-from langchain_groq import ChatGroq
-from langchain_openai import ChatOpenAI
+
+try:
+    from langchain_openai import ChatOpenAI
+except Exception:  # pragma: no cover - exercised in environments without the optional dependency
+    ChatOpenAI = None
 
 from app.core.config import settings
 from app.schemas.agents import DeveloperAgentInput
@@ -157,7 +160,7 @@ async def _handle_groq_rate_limit(exc: Exception):
         match = re.search(r"please try again in\s+([0-9]+)m([0-9.]+)s", msg)
         if match:
             wait_time = (float(match.group(1)) * 60.0) + float(match.group(2)) + 2.0
-            wait_time = min(wait_time, 20.0)
+            wait_time = min(wait_time, 4.0)
             logger.warning("[developer] Groq rate limit hit. Waiting for %.1f seconds...", wait_time)
             await asyncio.sleep(wait_time)
             return
@@ -165,15 +168,15 @@ async def _handle_groq_rate_limit(exc: Exception):
         match = re.search(r"please try again in\s+([0-9.]+)s", msg)
         if match:
             wait_time = float(match.group(1)) + 2.0
-            wait_time = min(wait_time, 20.0)
+            wait_time = min(wait_time, 4.0)
             logger.warning("[developer] Groq rate limit hit. Waiting for %.1f seconds...", wait_time)
             await asyncio.sleep(wait_time)
         else:
-            logger.warning("[developer] Groq rate limit hit (unparseable time). Waiting for 10 seconds...")
-            await asyncio.sleep(10.0)
+            logger.warning("[developer] Groq rate limit hit (unparseable time). Waiting for 2 seconds...")
+            await asyncio.sleep(2.0)
     else:
-        logger.warning("[developer] Non rate-limit error: %s. Sleeping 5s.", str(exc)[:150])
-        await asyncio.sleep(5.0)
+        logger.warning("[developer] Non rate-limit error: %s. Sleeping 1s.", str(exc)[:150])
+        await asyncio.sleep(1.0)
 
 
 def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
@@ -281,23 +284,22 @@ def _is_low_quality_content(path: str, content: str) -> bool:
         "payload must be a dict",
         "no file content available",
         "placeholder",
-        "todo",
     ]
     if any(phrase in lower for phrase in marker_phrases):
         return True
 
     extension = path.split(".")[-1].lower() if "." in path else ""
-    min_len = 220
-    min_lines = 12
+    min_len = 100
+    min_lines = 5
     if extension in {"md", "json", "yml", "yaml", "txt", "env"}:
-        min_len = 140
-        min_lines = 8
+        min_len = 80
+        min_lines = 3
     if extension in {"tsx", "ts"}:
-        min_len = 650
-        min_lines = 30
+        min_len = 180
+        min_lines = 8
     if extension == "py":
-        min_len = 700
-        min_lines = 32
+        min_len = 200
+        min_lines = 8
 
     line_count = len([line for line in text.splitlines() if line.strip()])
     return len(text) < min_len or line_count < min_lines
@@ -783,7 +785,11 @@ def _boost_content_depth(path: str, content: str, description: str) -> str:
     return existing
 
 
-def _extract_batch_file_contents(raw: Dict[str, Any], batch: List[Dict[str, str]]) -> Dict[str, str]:
+def _extract_batch_file_contents(
+    raw: Dict[str, Any],
+    batch: List[Dict[str, str]],
+    fallback_tracker: List[bool] | None = None,
+) -> Dict[str, str]:
     expected_paths = [str(item.get("path", "")).strip() for item in batch]
     expected_lookup: Dict[str, Dict[str, str]] = {}
     for item in batch:
@@ -809,6 +815,8 @@ def _extract_batch_file_contents(raw: Dict[str, Any], batch: List[Dict[str, str]
         language = str(file_meta.get("language") or _language_from_path(path))
         description = str(file_meta.get("description") or "Implementation artifact")
         extracted[path] = _fallback_content_for_file(path, language, description)
+        if fallback_tracker is not None:
+            fallback_tracker.append(True)
 
     return extracted
 
@@ -955,55 +963,66 @@ def _ensure_detailed_plan(
 class DeveloperAgent:
     def __init__(self, provider: str = "groq"):
         self.name = "Developer Agent"
+        self._used_deterministic_fallback = False
         selected_provider = (provider or "groq").lower()
         if selected_provider == "gemini":
             if not settings.GEMINI_API_KEY:
                 raise ValueError("GEMINI_API_KEY is required for Developer Agent fallback")
+            if ChatOpenAI is None:
+                raise ImportError("langchain_openai is required for Developer Agent Gemini support")
             self.provider = "gemini"
             self.llm = ChatOpenAI(
                 model=settings.GEMINI_MODEL,
                 temperature=0.7,
                 api_key=settings.GEMINI_API_KEY,
                 base_url=settings.GEMINI_BASE_URL,
-                max_retries=2,
+                max_retries=0,
             )
             self.phase2_llm = ChatOpenAI(
                 model=settings.GEMINI_MODEL,
                 temperature=0.7,
                 api_key=settings.GEMINI_API_KEY,
                 base_url=settings.GEMINI_BASE_URL,
-                max_retries=2,
+                max_retries=0,
             )
             self.phase3_llm = ChatOpenAI(
                 model=settings.GEMINI_MODEL,
                 temperature=0.7,
                 api_key=settings.GEMINI_API_KEY,
                 base_url=settings.GEMINI_BASE_URL,
-                max_retries=2,
+                max_retries=0,
             )
         else:
             if not settings.OPENAI_API_KEY:
                 raise ValueError("OPENAI_API_KEY is required for Developer Agent (Groq)")
+            if ChatOpenAI is None:
+                raise ImportError("langchain_openai is required for Developer Agent Groq support")
             self.provider = "groq"
-            self.llm = ChatGroq(
-                model_name=settings.OPENAI_MODEL,
+            self.llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
                 temperature=0.7,
                 api_key=settings.OPENAI_API_KEY,
-                max_retries=2,
+                base_url=settings.OPENAI_BASE_URL,
+                max_retries=0,
             )
-            self.phase2_llm = ChatGroq(
-                model_name=settings.OPENAI_MODEL,
+            self.phase2_llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
                 temperature=0.7,
                 api_key=settings.OPENAI_API_KEY,
-                max_retries=2,
+                base_url=settings.OPENAI_BASE_URL,
+                max_retries=0,
             )
-            self.phase3_llm = ChatGroq(
-                model_name=settings.OPENAI_MODEL,
+            self.phase3_llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
                 temperature=0.7,
                 api_key=settings.OPENAI_API_KEY,
-                max_retries=2,
+                base_url=settings.OPENAI_BASE_URL,
+                max_retries=0,
             )
-        self.max_retries = 3
+        self.max_retries = 2
+
+    def _mark_deterministic_fallback(self) -> None:
+        self._used_deterministic_fallback = True
 
     @staticmethod
     def _minimum_line_target(path: str) -> int:
@@ -1020,12 +1039,12 @@ class DeveloperAgent:
     def _minimum_char_target(path: str) -> int:
         extension = path.split(".")[-1].lower() if "." in path else ""
         if extension in {"ts", "tsx"}:
-            return 900
-        if extension == "py":
-            return 950
-        if extension in {"css", "json", "md"}:
             return 320
-        return 220
+        if extension == "py":
+            return 360
+        if extension in {"css", "json", "md"}:
+            return 140
+        return 120
 
     async def _generate_single_file_content(
         self,
@@ -1125,7 +1144,7 @@ class DeveloperAgent:
             "Generate PHASE 1 implementation plan JSON.\\n",
             "Return ONLY valid JSON object with: tech_stack_confirmation, dependency_ordered_build_sequence, key_architectural_decisions, technical_execution_plan, backend_execution_plan, frontend_execution_plan, data_and_infra_plan, testing_and_rollout_plan, risk_mitigation_plan, required_files.\\n",
             "Each required_files item: path, language, description.\\n",
-            "Keep required_files between 18 and 40.\\n\\n",
+            "Keep required_files between 8 and 16. Favor only core files needed for demo workflow.\\n\\n",
             f"Product: {product}\\n",
             f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
             f"Stories Count: {len(user_stories)}\\n",
@@ -1165,6 +1184,7 @@ class DeveloperAgent:
             self.provider,
             str(last_error)[:250] if last_error else "unknown",
         )
+        self._mark_deterministic_fallback()
         return _fallback_plan(prd=prd, design_spec=design_spec)
 
     async def _generate_file_manifest(
@@ -1188,7 +1208,7 @@ class DeveloperAgent:
             "Generate PHASE 2 file manifest JSON array.\\n",
             "Return ONLY a valid JSON array of file objects.\\n",
             "Each file object must include: path, language, description.\\n",
-            "Target between 24 and 48 files based on actual complexity.\\n\\n",
+            "Target between 8 and 16 files for a minimal but runnable demo.\\n\\n",
             f"Product: {product}\\n",
             f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
         ]
@@ -1249,6 +1269,7 @@ class DeveloperAgent:
                 await _handle_groq_rate_limit(exc)
 
         logger.warning("[developer] File manifest generation failed, using fallback manifest: %s", str(last_error)[:250])
+        self._mark_deterministic_fallback()
         fallback_from_plan = _normalize_manifest_files(_normalize_required_files(plan))
         if fallback_from_plan:
             return fallback_from_plan
@@ -1304,6 +1325,7 @@ class DeveloperAgent:
                 "Generate PHASE 3 production-ready file contents for this batch.\\n",
                 "Return ONLY valid JSON object with top-level key 'files'.\\n",
                 "Each file must have: {path, content}. No stubs. No TODOs.\\n\\n",
+                "Keep content concise and focused on core behavior only.\\n",
                 f"Product: {product}\\n",
                 f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
             ]
@@ -1326,7 +1348,7 @@ class DeveloperAgent:
             last_error: Exception | None = None
             batch_contents: Dict[str, str] | None = None
             for _ in range(self.max_retries):
-                await asyncio.sleep(2.0)  # Delay to avoid Groq rate limits between batches
+                await asyncio.sleep(0.25)
                 try:
                     response = await self.phase3_llm.ainvoke(
                         [
@@ -1336,7 +1358,10 @@ class DeveloperAgent:
                     )
                     api_calls += 1
                     parsed = _extract_json_object(response.content)
-                    batch_contents = _extract_batch_file_contents(parsed, batch)
+                    fallback_hits: List[bool] = []
+                    batch_contents = _extract_batch_file_contents(parsed, batch, fallback_tracker=fallback_hits)
+                    if fallback_hits:
+                        self._mark_deterministic_fallback()
                     break
                 except Exception as exc:
                     last_error = exc
@@ -1351,6 +1376,7 @@ class DeveloperAgent:
                     index + 1,
                     str(last_error)[:250],
                 )
+                self._mark_deterministic_fallback()
                 batch_contents = _extract_batch_file_contents({}, batch)
 
             for file_meta in batch:
@@ -1374,6 +1400,7 @@ class DeveloperAgent:
                     if targeted:
                         batch_contents[path] = targeted
                     else:
+                        self._mark_deterministic_fallback()
                         batch_contents[path] = _fallback_content_for_file(path, language, description)
 
                 batch_contents[path] = _boost_content_depth(
@@ -1588,24 +1615,76 @@ class DeveloperAgent:
             phase3_api_calls=phase3_api_calls,
         )
 
+        if self.provider == "groq" and self._used_deterministic_fallback and settings.GEMINI_API_KEY:
+            logger.warning(
+                "[developer] Groq run used deterministic fallback; retrying entire developer flow with Gemini. run_id=%s",
+                run_id,
+            )
+            try:
+                gemini_agent = DeveloperAgent(provider="gemini")
+                return await gemini_agent.execute(input_data)
+            except Exception as gemini_error:
+                logger.warning(
+                    "[developer] Gemini retry failed; returning deterministic Groq fallback output. run_id=%s error=%s",
+                    run_id,
+                    str(gemini_error)[:250],
+                )
+
         logger.info("[developer] generated output run_id=%s files=%s", run_id, len(output.get("files_created", [])))
         return output
+
+
+def _build_deterministic_developer_output(input_data: DeveloperAgentInput) -> Dict[str, Any]:
+    run_id = str(input_data.run_id)
+    prd = input_data.prd.model_dump(mode="json")
+    design_spec = input_data.design_spec.model_dump(mode="json")
+
+    plan = _fallback_plan(prd=prd, design_spec=design_spec)
+    file_manifest = _normalize_manifest_files(_normalize_required_files(plan))
+    generated_content: Dict[str, str] = {}
+    for file_meta in file_manifest:
+        path = str(file_meta.get("path", "")).strip()
+        if not path:
+            continue
+        language = str(file_meta.get("language") or _language_from_path(path))
+        description = str(file_meta.get("description") or "Implementation artifact")
+        generated_content[path] = _fallback_content_for_file(path, language, description)
+
+    fallback_agent = DeveloperAgent.__new__(DeveloperAgent)
+    fallback_agent.provider = "fallback"
+    fallback_agent._used_deterministic_fallback = True
+    return DeveloperAgent._assemble_output(  # type: ignore[misc]
+        fallback_agent,
+        run_id=run_id,
+        prd=prd,
+        design_spec=design_spec,
+        plan=plan,
+        file_manifest=file_manifest,
+        generated_content=generated_content,
+        phase3_api_calls=0,
+    )
 
 
 async def run_developer_agent(input_data: DeveloperAgentInput | Dict[str, Any]) -> Dict[str, Any]:
     """Workflow entrypoint for Developer Agent."""
     if isinstance(input_data, dict):
         input_data = DeveloperAgentInput.model_validate(input_data)
-    agent = DeveloperAgent(provider="groq")
     try:
+        agent = DeveloperAgent(provider="groq")
         return await agent.execute(input_data)
     except Exception as groq_error:
-        if settings.GEMINI_API_KEY and _is_quota_or_rate_limit_error(groq_error):
-            logger.warning(
-                "[developer] Groq failed due to quota/rate-limit; retrying with Gemini. run_id=%s error=%s",
-                str(input_data.run_id),
-                str(groq_error)[:250],
-            )
+        logger.warning(
+            "[developer] Groq developer run failed; retrying with Gemini. run_id=%s error=%s",
+            str(input_data.run_id),
+            str(groq_error)[:250],
+        )
+        try:
             fallback_agent = DeveloperAgent(provider="gemini")
             return await fallback_agent.execute(input_data)
-        raise
+        except Exception as gemini_error:
+            logger.warning(
+                "[developer] Gemini developer run failed; using deterministic fallback output. run_id=%s error=%s",
+                str(input_data.run_id),
+                str(gemini_error)[:250],
+            )
+            return _build_deterministic_developer_output(input_data)

@@ -308,11 +308,24 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
           <div className="bg-surface border border-border rounded-lg p-6">
             <h3 className="text-lg font-bold text-[var(--agent-docs)] mb-4">Documentation</h3>
             {payload ? (
-              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap">
-                {JSON.stringify(payload, null, 2)}
-              </pre>
+              (() => {
+                const docs = payload?.documents || {};
+                const names = Object.keys(docs);
+                const primaryName = names.includes('README.md') ? 'README.md' : (names[0] || 'README.md');
+                const content = docs?.[primaryName] || '# README.md\n\nDocumentation generated but content is currently unavailable.';
+                return (
+                  <div className="space-y-3">
+                    <div className="text-xs text-text-secondary">Showing: {primaryName}</div>
+                    <pre className="text-sm font-mono text-text-code whitespace-pre-wrap bg-bg-base border border-border rounded-md p-4 overflow-x-auto">
+                      {content}
+                    </pre>
+                  </div>
+                );
+              })()
             ) : (
-              <p className="text-text-secondary italic">Waiting for documentation...</p>
+              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap bg-bg-base border border-border rounded-md p-4 overflow-x-auto">
+{`# README.md\n\nDemo documentation placeholder.\n\nPipeline is still running; final markdown files will appear here when the documentation stage completes.`}
+              </pre>
             )}
           </div>
         );

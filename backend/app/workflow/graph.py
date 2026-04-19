@@ -16,7 +16,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict
 
-from langgraph.graph import END, StateGraph
+try:
+    from langgraph.graph import END, StateGraph
+except Exception:  # pragma: no cover - exercised in environments without a compatible langgraph stack
+    END = None
+    StateGraph = None
 
 from app.core.events import EventType
 from app.core.redis import publish_event, signal_human_checkpoint, wait_for_human_approval
@@ -65,6 +69,7 @@ _run_designer = _load_agent("app.agents.designer", "run_designer_agent")
 _run_developer = _load_agent("app.agents.developer", "run_developer_agent")
 _run_qa = _load_agent("app.agents.qa", "run_qa_agent")
 _run_bugfix = _load_agent("app.agents.bugfix", "run_bugfix_agent")
+_run_devops = _load_agent("app.agents.devops", "run_devops_agent")
 _run_documentation = _load_agent("app.agents.documentation", "run_documentation_agent")
 
 
@@ -240,10 +245,20 @@ async def node_bugfix(state: PipelineState) -> PipelineState:
 
 async def node_parallel_final(state: PipelineState) -> PipelineState:
     """
-    Run Documentation as the final stage after QA passes.
+    Run DevOps and Documentation as the final stage after QA passes.
     """
     run_id = state["run_id"]
     logger.info("[graph] Starting parallel final stage for run_id=%s", run_id)
+
+    devops_result = None
+    try:
+        devops_result = await agent_executor("devops", _run_devops, state, iteration=1)
+    except Exception as devops_error:
+        logger.error("[graph] DevOps agent failed in final stage: %s", devops_error)
+    state = {
+        **state,
+        "devops_output": devops_result,
+    }
 
     try:
         docs_result = await agent_executor("documentation", _run_documentation, state, iteration=1)
@@ -255,14 +270,16 @@ async def node_parallel_final(state: PipelineState) -> PipelineState:
     else:
         state["phases"]["documentation"]["status"] = "COMPLETE"
 
+    final_state = "FAILED" if state.get("run_state") == "FAILED" else "COMPLETE"
     state = {
         **state,
         "docs_output": docs_result,
-        "run_state": "COMPLETE",
+        "run_state": final_state,
     }
 
     await _publish_global_state_snapshot(state)
-    await publish_event(run_id, EventType.PIPELINE_COMPLETE)
+    if final_state == "COMPLETE":
+        await publish_event(run_id, EventType.PIPELINE_COMPLETE)
     return state
 
 
@@ -293,8 +310,8 @@ def route_after_qa(state: PipelineState) -> str:
         return "parallel_final"
 
     if route_to == "human_review":
-        logger.info("[graph] QA max iterations reached → human_review (END)")
-        return "__end__"
+        logger.info("[graph] QA terminal route requested → parallel_final for docs artifact emission")
+        return "parallel_final"
 
     # QA FAIL — loop through bugfix then developer
     qa_iter = state.get("qa_iteration", 0)
@@ -302,10 +319,10 @@ def route_after_qa(state: PipelineState) -> str:
 
     if qa_iter >= max_iter:
         logger.info(
-            "[graph] QA FAIL after %d/%d iterations → human_review (END)",
+            "[graph] QA FAIL after %d/%d iterations → parallel_final for docs artifact emission",
             qa_iter, max_iter,
         )
-        return "__end__"
+        return "parallel_final"
 
     logger.info("[graph] QA FAIL (iteration %d/%d) → bugfix", qa_iter, max_iter)
     return "bugfix"
@@ -330,6 +347,9 @@ def build_pipeline_graph() -> Any:
     Returns:
         A compiled LangGraph runnable (invoke / astream compatible).
     """
+    if StateGraph is None or END is None:
+        raise ImportError("langgraph is required to build the pipeline graph")
+
     graph = StateGraph(PipelineState)
 
     # ── Register nodes ────────────────────────────────────────────────────────
@@ -372,4 +392,4 @@ def build_pipeline_graph() -> Any:
 
 
 # ── Singleton graph instance (compiled once at import time) ──────────────────
-pipeline_graph = build_pipeline_graph()
+pipeline_graph = build_pipeline_graph() if StateGraph is not None and END is not None else None

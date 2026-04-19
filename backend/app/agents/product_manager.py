@@ -214,9 +214,11 @@ class ProductManagerAgent:
             temperature=0.3,
             api_key=settings.OPENAI_API_KEY,
             base_url=settings.OPENAI_BASE_URL,
+            max_tokens=900,
+            max_retries=0,
         )
         self.parser = PydanticOutputParser(pydantic_object=PRD)
-        self.max_retries = 3
+        self.max_retries = 2
 
     def _build_prd_prompt(self, research_report: ResearchReport) -> str:
         """Build concise PRD prompt from research."""
@@ -301,15 +303,14 @@ Estimated MVP Timeline: {feasibility.get('estimated_mvp_weeks', 0)} weeks
 Top Pain Points to Address:
 {top_pains}
 
-Create a Product Requirements Document (PRD) in JSON format matching this schema:
-{schema_example}
+Create a concise Product Requirements Document (PRD) JSON.
 
 Requirements:
-1. Include at least 5 user stories with proper Given/When/Then acceptance criteria
+1. Include 3-5 user stories with proper Given/When/Then acceptance criteria
 2. Map all features to user stories
 3. Provide realistic engineering estimates
 4. Group features into MVP, v1.1, and v2.0 phases
-5. Create a complete user flow of 5-7 steps
+5. Create a complete user flow of 3-5 steps
 
 IMPORTANT FORMAT REQUIREMENTS:
 - User story IDs must follow the pattern: US-001, US-002, US-003 (US- followed by exactly 3 digits)
@@ -417,7 +418,7 @@ IMPORTANT FORMAT REQUIREMENTS:
                 
                 # Handle rate limit with exponential backoff
                 if "rate_limit_exceeded" in error_str or "429" in error_str:
-                    wait_time = min(2 ** attempt * 10, 120)
+                    wait_time = min(2 ** attempt * 3, 8)
                     logger.warning(f"[product_manager] Rate limit, waiting {wait_time}s before retry {attempt+1}/{self.max_retries}")
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(wait_time)

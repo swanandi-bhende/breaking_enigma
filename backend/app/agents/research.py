@@ -178,9 +178,11 @@ class ResearchAgent:
             temperature=0.3,
             api_key=settings.OPENAI_API_KEY,
             base_url=settings.OPENAI_BASE_URL,
+            max_tokens=900,
+            max_retries=0,
         )
         self.parser = PydanticOutputParser(pydantic_object=ResearchReport)
-        self.max_retries = 3
+        self.max_retries = 2
 
     def _build_research_prompt(self, project_brief: Dict[str, Any]) -> str:
         """Build the research prompt from project brief."""
@@ -188,80 +190,19 @@ class ResearchAgent:
         domain = project_brief.get("domain", "general")
         target_platform = project_brief.get("target_platform", "web")
 
-        schema_example = """{
-  "problem_statement": {
-    "core_problem": "...",
-    "affected_users": "...",
-    "current_solutions_fail_because": "...",
-    "opportunity_window": "..."
-  },
-  "market": {
-    "tam_usd": 0,
-    "sam_usd": 0,
-    "som_usd": 0,
-    "industry": "...",
-    "growth_rate_yoy_percent": 0,
-    "key_trends": ["..."]
-  },
-  "personas": [
-    {
-      "name": "...",
-      "age_range": "...",
-      "occupation": "...",
-      "goals": ["..."],
-      "frustrations": ["..."],
-      "tech_savviness": "low|medium|high",
-      "primary_device": "..."
-    }
-  ],
-  "pain_points": [
-    {
-      "pain": "...",
-      "severity": "low|medium|high|critical",
-      "frequency": "rare|occasional|frequent|constant",
-      "existing_workaround": "..."
-    }
-  ],
-  "competitors": [
-    {
-      "name": "...",
-      "url": "...",
-      "positioning": "...",
-      "pricing_model": "...",
-      "key_features": ["..."],
-      "weaknesses": ["..."],
-      "user_sentiment": "..."
-    }
-  ],
-  "viability": {
-    "revenue_models": ["..."],
-    "recommended_model": "...",
-    "estimated_arpu": "...",
-    "go_to_market_strategy": "...",
-    "viability_score": 5
-  },
-  "feasibility": {
-    "technical_risks": ["..."],
-    "complexity": "low|medium|high",
-    "estimated_mvp_weeks": 0,
-    "key_dependencies": ["..."],
-    "feasibility_score": 5
-  }
-}"""
-
         return f"""Product Idea: {normalized_idea}
 Domain: {domain}
 Target Platform: {target_platform}
 
-Conduct comprehensive market research and produce a detailed research report matching this JSON schema:
-
-{schema_example}
+Produce a concise research_report JSON with keys:
+problem_statement, market, personas, pain_points, competitors, viability, feasibility.
 
 Requirements:
 1. Use web search to gather real data where possible
 2. Fill in ALL fields - use null only if absolutely necessary
 3. Ensure 2+ competitors with complete data
-4. Return ONLY the JSON object, no additional text"""
+4. Keep response compact and MVP-focused
+5. Return ONLY the JSON object, no additional text"""
 
     async def _collect_search_evidence(self, project_brief: Dict[str, Any]) -> Dict[str, Any]:
         """Collect live web evidence to ground the research report."""
@@ -422,7 +363,7 @@ Requirements:
                 
                 # Handle rate limit with exponential backoff
                 if "rate_limit_exceeded" in error_str or "429" in error_str:
-                    wait_time = min(2 ** attempt * 10, 120)  # Exponential backoff
+                    wait_time = min(2 ** attempt * 3, 8)
                     logger.warning(f"[research] Rate limit, waiting {wait_time}s before retry {attempt+1}/{self.max_retries}")
                     if attempt < self.max_retries - 1:
                         await asyncio.sleep(wait_time)
