@@ -3,6 +3,9 @@ import logging
 import re
 from typing import Any, Dict, List
 
+import asyncio
+import json_repair
+from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
@@ -143,39 +146,105 @@ def _prd_keywords(prd: Dict[str, Any], limit: int = 6) -> List[str]:
     return ordered
 
 
+async def _handle_groq_rate_limit(exc: Exception):
+    msg = str(exc).lower()
+    if _is_daily_quota_error(exc):
+        logger.warning("[developer] Daily quota exhausted; skipping long wait and falling back quickly.")
+        await asyncio.sleep(0.5)
+        return
+
+    if "rate_limit_exceeded" in msg or "please try again in" in msg or "429" in msg or "too many requests" in msg:
+        match = re.search(r"please try again in\s+([0-9]+)m([0-9.]+)s", msg)
+        if match:
+            wait_time = (float(match.group(1)) * 60.0) + float(match.group(2)) + 2.0
+            wait_time = min(wait_time, 20.0)
+            logger.warning("[developer] Groq rate limit hit. Waiting for %.1f seconds...", wait_time)
+            await asyncio.sleep(wait_time)
+            return
+
+        match = re.search(r"please try again in\s+([0-9.]+)s", msg)
+        if match:
+            wait_time = float(match.group(1)) + 2.0
+            wait_time = min(wait_time, 20.0)
+            logger.warning("[developer] Groq rate limit hit. Waiting for %.1f seconds...", wait_time)
+            await asyncio.sleep(wait_time)
+        else:
+            logger.warning("[developer] Groq rate limit hit (unparseable time). Waiting for 10 seconds...")
+            await asyncio.sleep(10.0)
+    else:
+        logger.warning("[developer] Non rate-limit error: %s. Sleeping 5s.", str(exc)[:150])
+        await asyncio.sleep(5.0)
+
+
+def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    markers = [
+        "rate_limit_exceeded",
+        "please try again in",
+        "429",
+        "too many requests",
+        "quota",
+        "tpm",
+        "tpd",
+        "tokens per day",
+    ]
+    return any(marker in msg for marker in markers)
+
+
+def _is_daily_quota_error(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    markers = [
+        "tokens per day",
+        "tpd",
+        "daily quota",
+        "exceeded your current quota",
+    ]
+    return any(marker in msg for marker in markers)
+
+
 def _extract_json_object(raw: str) -> Dict[str, Any]:
     text = raw.strip()
     try:
-        parsed = json.loads(text)
+        parsed = json_repair.loads(text)
         if isinstance(parsed, dict):
             return parsed
+        if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+            return parsed[0]
     except Exception:
         pass
 
     start = text.find("{")
     end = text.rfind("}")
     if start != -1 and end != -1 and end > start:
-        parsed = json.loads(text[start : end + 1])
-        if isinstance(parsed, dict):
-            return parsed
+        try:
+            parsed = json_repair.loads(text[start : end + 1])
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
     raise ValueError("Could not parse JSON object from model response")
 
 
 def _extract_json_array(raw: str) -> List[Dict[str, Any]]:
     text = raw.strip()
     try:
-        parsed = json.loads(text)
+        parsed = json_repair.loads(text)
         if isinstance(parsed, list):
             return [item for item in parsed if isinstance(item, dict)]
+        if isinstance(parsed, dict):
+            return [parsed]
     except Exception:
         pass
 
     start = text.find("[")
     end = text.rfind("]")
     if start != -1 and end != -1 and end > start:
-        parsed = json.loads(text[start : end + 1])
-        if isinstance(parsed, list):
-            return [item for item in parsed if isinstance(item, dict)]
+        try:
+            parsed = json_repair.loads(text[start : end + 1])
+            if isinstance(parsed, list):
+                return [item for item in parsed if isinstance(item, dict)]
+        except Exception:
+            pass
     raise ValueError("Could not parse JSON array from model response")
 
 
@@ -884,30 +953,57 @@ def _ensure_detailed_plan(
     }
 
 class DeveloperAgent:
-    def __init__(self):
+    def __init__(self, provider: str = "groq"):
         self.name = "Developer Agent"
-        self.provider = "gemini"
-        if not settings.GEMINI_API_KEY:
-            raise ValueError("GEMINI_API_KEY is required for Developer Agent")
-        self.llm = ChatOpenAI(
-            model=PHASE1_MODEL,
-            temperature=0.3,
-            api_key=settings.GEMINI_API_KEY,
-            base_url=settings.GEMINI_BASE_URL,
-        )
-        self.phase2_llm = ChatOpenAI(
-            model=PHASE2_MODEL,
-            temperature=0.2,
-            api_key=settings.GEMINI_API_KEY,
-            base_url=settings.GEMINI_BASE_URL,
-        )
-        self.phase3_llm = ChatOpenAI(
-            model=PHASE3_MODEL,
-            temperature=0.2,
-            api_key=settings.GEMINI_API_KEY,
-            base_url=settings.GEMINI_BASE_URL,
-        )
-        self.max_retries = 2
+        selected_provider = (provider or "groq").lower()
+        if selected_provider == "gemini":
+            if not settings.GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY is required for Developer Agent fallback")
+            self.provider = "gemini"
+            self.llm = ChatOpenAI(
+                model=settings.GEMINI_MODEL,
+                temperature=0.7,
+                api_key=settings.GEMINI_API_KEY,
+                base_url=settings.GEMINI_BASE_URL,
+                max_retries=2,
+            )
+            self.phase2_llm = ChatOpenAI(
+                model=settings.GEMINI_MODEL,
+                temperature=0.7,
+                api_key=settings.GEMINI_API_KEY,
+                base_url=settings.GEMINI_BASE_URL,
+                max_retries=2,
+            )
+            self.phase3_llm = ChatOpenAI(
+                model=settings.GEMINI_MODEL,
+                temperature=0.7,
+                api_key=settings.GEMINI_API_KEY,
+                base_url=settings.GEMINI_BASE_URL,
+                max_retries=2,
+            )
+        else:
+            if not settings.OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY is required for Developer Agent (Groq)")
+            self.provider = "groq"
+            self.llm = ChatGroq(
+                model_name=settings.OPENAI_MODEL,
+                temperature=0.7,
+                api_key=settings.OPENAI_API_KEY,
+                max_retries=2,
+            )
+            self.phase2_llm = ChatGroq(
+                model_name=settings.OPENAI_MODEL,
+                temperature=0.7,
+                api_key=settings.OPENAI_API_KEY,
+                max_retries=2,
+            )
+            self.phase3_llm = ChatGroq(
+                model_name=settings.OPENAI_MODEL,
+                temperature=0.7,
+                api_key=settings.OPENAI_API_KEY,
+                max_retries=2,
+            )
+        self.max_retries = 3
 
     @staticmethod
     def _minimum_line_target(path: str) -> int:
@@ -951,26 +1047,48 @@ class DeveloperAgent:
             if isinstance(item, dict):
                 feedback_instructions.append(item)
 
-        prompt = (
-            "Generate production-ready source code for one file.\n"
-            "Return ONLY valid JSON object: {\"content\": \"...\"}.\n"
-            "Do not include markdown fences. Do not include TODO placeholders.\n"
-            "Code must be complete and runnable for this file purpose.\n\n"
-            f"File Path: {path}\n"
-            f"Language: {language}\n"
-            f"Description: {description}\n"
-            f"Product Vision: {prd.get('product_vision', {}).get('elevator_pitch', '')}\n"
-            f"Related Stories: {json.dumps(related.get('related_stories', []), ensure_ascii=True)}\n"
-            f"Related Screens: {json.dumps(related.get('related_screens', []), ensure_ascii=True)}\n"
-            f"Related Endpoints: {json.dumps(related.get('related_endpoints', []), ensure_ascii=True)}\n"
-            f"Related Data Models: {json.dumps(related.get('related_models', []), ensure_ascii=True)}\n"
-            f"Implementation Plan: {json.dumps(plan, ensure_ascii=True)}\n"
-            f"QA Iteration: {qa_feedback.get('iteration', 0)}\n"
-            f"QA File-specific Bugs: {json.dumps(feedback_bugs[:8], ensure_ascii=True)}\n"
-            f"QA Fix Instructions: {json.dumps(feedback_instructions[:12], ensure_ascii=True)}\n"
-            f"Minimum Lines Target: {self._minimum_line_target(path)}\n"
-            f"Minimum Characters Target: {self._minimum_char_target(path)}\n"
-        )
+        # Trim related context to reduce tokens
+        related_stories = related.get('related_stories', [])[:2]
+        related_screens = related.get('related_screens', [])[:2]
+        related_endpoints = related.get('related_endpoints', [])[:3]
+        related_models = related.get('related_models', [])[:2]
+        
+        # Include only essential plan details, not the full plan
+        tech_stack = plan.get("tech_stack_confirmation", [])[:2] if isinstance(plan.get("tech_stack_confirmation", []), list) else []
+        key_decisions = plan.get("key_architectural_decisions", [])[:2] if isinstance(plan.get("key_architectural_decisions", []), list) else []
+
+        parts = [
+            "Generate production-ready source code for one file.\n",
+            "Return ONLY valid JSON object: {\"content\": \"...\"}.\n",
+            "Do not include markdown fences. Do not include TODO placeholders.\n",
+            "Code must be complete and runnable for this file purpose.\n\n",
+            f"File Path: {path}\n",
+            f"Language: {language}\n",
+            f"Purpose: {description}\n",
+            f"Product: {prd.get('product_vision', {}).get('elevator_pitch', '')}\n",
+        ]
+        if tech_stack:
+            parts.append(f"Tech Stack: {json.dumps(tech_stack, ensure_ascii=True)}\n")
+        if related_stories:
+            parts.append(f"Related Stories: {json.dumps(related_stories, ensure_ascii=True)}\n")
+        if related_screens:
+            parts.append(f"Related Screens: {json.dumps(related_screens, ensure_ascii=True)}\n")
+        if related_endpoints:
+            parts.append(f"Related Endpoints: {json.dumps(related_endpoints, ensure_ascii=True)}\n")
+        if related_models:
+            parts.append(f"Related Data Models: {json.dumps(related_models, ensure_ascii=True)}\n")
+        if key_decisions:
+            parts.append(f"Key Decisions: {json.dumps(key_decisions, ensure_ascii=True)}\n")
+        if feedback_bugs:
+            parts.append(f"File-specific QA Bugs: {json.dumps(feedback_bugs[:3], ensure_ascii=True)}\n")
+        if feedback_instructions:
+            parts.append(f"QA Fix Instructions: {json.dumps(feedback_instructions[:3], ensure_ascii=True)}\n")
+        parts.extend([
+            f"Minimum Lines Target: {self._minimum_line_target(path)}\n",
+            f"Minimum Characters Target: {self._minimum_char_target(path)}\n",
+        ])
+        
+        prompt = "".join(parts)
 
         last_error: Exception | None = None
         for _ in range(self.max_retries + 1):
@@ -997,28 +1115,33 @@ class DeveloperAgent:
 
     async def _generate_plan(self, prd: Dict[str, Any], design_spec: Dict[str, Any], qa_feedback: Dict[str, Any]) -> Dict[str, Any]:
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
-        keywords = _prd_keywords(prd, limit=8)
-        user_stories = prd.get("user_stories", [])
-        screens = design_spec.get("screens", [])
-        api_spec = design_spec.get("api_spec", [])
-        data_models = design_spec.get("data_models", [])
+        keywords = _prd_keywords(prd, limit=6)
+        user_stories = prd.get("user_stories", []) if isinstance(prd.get("user_stories", []), list) else []
+        screens = design_spec.get("screens", []) if isinstance(design_spec.get("screens", []), list) else []
+        api_spec = design_spec.get("api_spec", []) if isinstance(design_spec.get("api_spec", []), list) else []
+        data_models = design_spec.get("data_models", []) if isinstance(design_spec.get("data_models", []), list) else []
 
-        prompt = (
-            "Generate PHASE 1 implementation plan JSON for the product below.\\n"
-            "Return ONLY valid JSON object with keys: tech_stack_confirmation, dependency_ordered_build_sequence, key_architectural_decisions, technical_execution_plan, backend_execution_plan, frontend_execution_plan, data_and_infra_plan, testing_and_rollout_plan, risk_mitigation_plan, required_files.\\n"
-            "Each required_files item must include path, language, description.\\n"
-            "Keep required_files count between 18 and 40.\\n"
-            "Ensure files include detailed layering: routes/services/schemas/clients/components/hooks/state/tests/docs.\\n\\n"
-            f"Product Vision: {product}\\n"
-            f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\n"
-            f"User Stories Count: {len(user_stories) if isinstance(user_stories, list) else 0}\\n"
-            f"Screens: {json.dumps(screens[:8], ensure_ascii=True)}\\n"
-            f"API Spec: {json.dumps(api_spec[:12], ensure_ascii=True)}\\n"
-            f"Data Models: {json.dumps(data_models[:8], ensure_ascii=True)}\\n"
-            f"QA Iteration Context: {qa_feedback.get('iteration', 0)}\\n"
-            f"Open QA Bugs: {json.dumps(qa_feedback.get('bugs', [])[:20], ensure_ascii=True)}\\n"
-            f"QA Fix Instructions: {json.dumps(qa_feedback.get('fix_instructions', [])[:20], ensure_ascii=True)}\\n"
-        )
+        parts = [
+            "Generate PHASE 1 implementation plan JSON.\\n",
+            "Return ONLY valid JSON object with: tech_stack_confirmation, dependency_ordered_build_sequence, key_architectural_decisions, technical_execution_plan, backend_execution_plan, frontend_execution_plan, data_and_infra_plan, testing_and_rollout_plan, risk_mitigation_plan, required_files.\\n",
+            "Each required_files item: path, language, description.\\n",
+            "Keep required_files between 18 and 40.\\n\\n",
+            f"Product: {product}\\n",
+            f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
+            f"Stories Count: {len(user_stories)}\\n",
+            f"Screens Count: {len(screens)}\\n",
+            f"Endpoints Count: {len(api_spec)}\\n",
+            f"Models Count: {len(data_models)}\\n",
+        ]
+        if screens:
+            parts.append(f"Sample Screens: {json.dumps(screens[:2], ensure_ascii=True)}\\n")
+        if api_spec:
+            parts.append(f"Sample Endpoints: {json.dumps(api_spec[:2], ensure_ascii=True)}\\n")
+        if data_models:
+            parts.append(f"Sample Models: {json.dumps(data_models[:2], ensure_ascii=True)}\\n")
+        parts.append("Focus on realistic layering: routes, services, schemas, clients, components, hooks, state, tests, docs.\\n")
+        
+        prompt = "".join(parts)
 
         last_error: Exception | None = None
         for _ in range(self.max_retries):
@@ -1032,10 +1155,17 @@ class DeveloperAgent:
                 return _extract_json_object(response.content)
             except Exception as exc:
                 last_error = exc
+                if _is_daily_quota_error(exc):
+                    logger.warning("[developer] Plan generation hit daily quota; using deterministic fallback.")
+                    break
+                await _handle_groq_rate_limit(exc)
 
-        raise RuntimeError(
-            f"Developer phase 1 plan generation failed after retries: {str(last_error)[:250]}"
-        ) from last_error
+        logger.warning(
+            "[developer] Plan generation failed after retries; using deterministic fallback plan. provider=%s error=%s",
+            self.provider,
+            str(last_error)[:250] if last_error else "unknown",
+        )
+        return _fallback_plan(prd=prd, design_spec=design_spec)
 
     async def _generate_file_manifest(
         self,
@@ -1045,26 +1175,41 @@ class DeveloperAgent:
         qa_feedback: Dict[str, Any],
     ) -> List[Dict[str, str]]:
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
-        keywords = _prd_keywords(prd, limit=8)
-        screens = design_spec.get("screens", [])
-        api_spec = design_spec.get("api_spec", [])
-        data_models = design_spec.get("data_models", [])
+        keywords = _prd_keywords(prd, limit=6)
+        screens = design_spec.get("screens", []) if isinstance(design_spec.get("screens", []), list) else []
+        api_spec = design_spec.get("api_spec", []) if isinstance(design_spec.get("api_spec", []), list) else []
+        data_models = design_spec.get("data_models", []) if isinstance(design_spec.get("data_models", []), list) else []
 
-        prompt = (
-            "Generate PHASE 2 file manifest JSON array for the product below.\\n"
-            "Return ONLY a valid JSON array of file objects.\\n"
-            "Each file object must include: path, language, description.\\n"
-            "Target between 24 and 48 files based on actual complexity from context.\\n"
-            "Include balanced coverage across config, schema/data, utilities, app pages, API routes, UI components, and environment setup when applicable.\\n\\n"
-            f"Product Vision: {product}\\n"
-            f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n"
-            f"Implementation Plan: {json.dumps(plan, ensure_ascii=True)}\\n"
-            f"Screens: {json.dumps(screens[:12], ensure_ascii=True)}\\n"
-            f"API Spec: {json.dumps(api_spec[:20], ensure_ascii=True)}\\n"
-            f"Data Models: {json.dumps(data_models[:12], ensure_ascii=True)}\\n"
-            f"QA Iteration Context: {qa_feedback.get('iteration', 0)}\\n"
-            f"QA Bug Focus Areas: {json.dumps(qa_feedback.get('bugs', [])[:20], ensure_ascii=True)}\\n"
-        )
+        # Reduce context - only include essential plan elements
+        tech_stack = plan.get("tech_stack_confirmation", [])[:2] if isinstance(plan.get("tech_stack_confirmation", []), list) else []
+        key_decisions = plan.get("key_architectural_decisions", [])[:2] if isinstance(plan.get("key_architectural_decisions", []), list) else []
+
+        parts = [
+            "Generate PHASE 2 file manifest JSON array.\\n",
+            "Return ONLY a valid JSON array of file objects.\\n",
+            "Each file object must include: path, language, description.\\n",
+            "Target between 24 and 48 files based on actual complexity.\\n\\n",
+            f"Product: {product}\\n",
+            f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
+        ]
+        if tech_stack:
+            parts.append(f"Tech Stack: {json.dumps(tech_stack, ensure_ascii=True)}\\n")
+        if key_decisions:
+            parts.append(f"Key Decisions: {json.dumps(key_decisions, ensure_ascii=True)}\\n")
+        parts.extend([
+            f"Screens Count: {len(screens)}\\n",
+            f"API Endpoints Count: {len(api_spec)}\\n",
+            f"Data Models Count: {len(data_models)}\\n",
+        ])
+        if screens:
+            parts.append(f"Sample Screens: {json.dumps(screens[:2], ensure_ascii=True)}\\n")
+        if api_spec:
+            parts.append(f"Sample Endpoints: {json.dumps(api_spec[:3], ensure_ascii=True)}\\n")
+        if data_models:
+            parts.append(f"Sample Models: {json.dumps(data_models[:2], ensure_ascii=True)}\\n")
+        parts.append("Include balanced coverage across config, schemas, routes, components, hooks, services, and tests.\\n")
+        
+        prompt = "".join(parts)
 
         last_error: Exception | None = None
         for _ in range(self.max_retries):
@@ -1098,6 +1243,10 @@ class DeveloperAgent:
                     return normalized
             except Exception as exc:
                 last_error = exc
+                if _is_daily_quota_error(exc):
+                    logger.warning("[developer] File manifest generation hit daily quota; using fallback manifest.")
+                    break
+                await _handle_groq_rate_limit(exc)
 
         logger.warning("[developer] File manifest generation failed, using fallback manifest: %s", str(last_error)[:250])
         fallback_from_plan = _normalize_manifest_files(_normalize_required_files(plan))
@@ -1118,39 +1267,66 @@ class DeveloperAgent:
         api_calls = 0
 
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
-        keywords = _prd_keywords(prd, limit=8)
-        features = prd.get("features", {})
-        user_stories = prd.get("user_stories", [])
-        api_spec = design_spec.get("api_spec", [])
-        data_models = design_spec.get("data_models", [])
+        keywords = _prd_keywords(prd, limit=6)
+        
+        # Extract only relevant context per batch to reduce token usage
+        api_spec_all = design_spec.get("api_spec", []) if isinstance(design_spec.get("api_spec", []), list) else []
+        data_models_all = design_spec.get("data_models", []) if isinstance(design_spec.get("data_models", []), list) else []
         target_paths = _qa_feedback_target_paths(qa_feedback)
+        
+        # Extract minimal essential plan info
+        tech_stack = plan.get("tech_stack_confirmation", [])[:1] if isinstance(plan.get("tech_stack_confirmation", []), list) else []
+        key_decisions = plan.get("key_architectural_decisions", [])[:1] if isinstance(plan.get("key_architectural_decisions", []), list) else []
 
         for index, batch in enumerate(batches):
-            prompt = (
-                "Generate PHASE 3 production-ready file contents for this exact batch.\\n"
-                "Return ONLY valid JSON object with top-level key 'files'.\\n"
-                "files must be an array of objects: { path, content }.\\n"
-                "Every requested path must be present.\\n"
-                "No stubs. No TODOs. No placeholder content.\\n\\n"
-                f"Batch Number: {index + 1} of {len(batches)}\\n"
-                f"Product Vision: {product}\\n"
-                f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n"
-                f"PRD Features: {json.dumps(features, ensure_ascii=True)}\\n"
-                f"User Stories: {json.dumps(user_stories[:16], ensure_ascii=True)}\\n"
-                f"API Endpoints: {json.dumps(api_spec[:20], ensure_ascii=True)}\\n"
-                f"Data Models: {json.dumps(data_models[:16], ensure_ascii=True)}\\n"
-                f"Implementation Plan: {json.dumps(plan, ensure_ascii=True)}\\n"
-                f"Requested Batch Files: {json.dumps(batch, ensure_ascii=True)}\\n"
-                f"QA Iteration Context: {qa_feedback.get('iteration', 0)}\\n"
-                f"QA Fix Instructions: {json.dumps(qa_feedback.get('fix_instructions', [])[:20], ensure_ascii=True)}\\n"
-                f"QA Target Paths: {json.dumps(target_paths[:20], ensure_ascii=True)}\\n"
-                "Every file must be implementation-complete and substantial (not tiny snippets).\\n"
-                "Include real validation, domain logic, and integration-oriented structure.\\n"
-            )
+            # Extract only the most relevant data for THIS batch
+            batch_paths = [str(item.get("path", "")) for item in batch]
+            batch_tokens = set()
+            for p in batch_paths:
+                batch_tokens.update(_path_tokens(p))
+            
+            # Find relevant endpoints and models for this batch
+            relevant_endpoints = []
+            for endpoint in api_spec_all:
+                endpoint_path = str(endpoint.get("path", "")).lower()
+                if any(token in batch_tokens for token in _path_tokens(endpoint_path)):
+                    relevant_endpoints.append(endpoint)
+            relevant_endpoints = relevant_endpoints[:3]
+            
+            relevant_models = []
+            for model in data_models_all:
+                entity_name = str(model.get("entity_name", "")).lower()
+                if any(token in batch_tokens for token in _path_tokens(entity_name)):
+                    relevant_models.append(model)
+            relevant_models = relevant_models[:2]
+            
+            prompt_parts = [
+                "Generate PHASE 3 production-ready file contents for this batch.\\n",
+                "Return ONLY valid JSON object with top-level key 'files'.\\n",
+                "Each file must have: {path, content}. No stubs. No TODOs.\\n\\n",
+                f"Product: {product}\\n",
+                f"Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n",
+            ]
+            if tech_stack:
+                prompt_parts.append(f"Tech: {json.dumps(tech_stack, ensure_ascii=True)}\\n")
+            if key_decisions:
+                prompt_parts.append(f"Key Decisions: {json.dumps(key_decisions, ensure_ascii=True)}\\n")
+            if relevant_endpoints:
+                prompt_parts.append(f"Relevant Endpoints: {json.dumps(relevant_endpoints, ensure_ascii=True)}\\n")
+            if relevant_models:
+                prompt_parts.append(f"Relevant Models: {json.dumps(relevant_models, ensure_ascii=True)}\\n")
+            if target_paths:
+                prompt_parts.append(f"QA Targets: {json.dumps(target_paths[:3], ensure_ascii=True)}\\n")
+            prompt_parts.extend([
+                f"Files in Batch: {json.dumps(batch, ensure_ascii=True)}\\n",
+                "Generate complete, production-ready code with validation and domain logic.\\n",
+            ])
+            prompt = "".join(prompt_parts)
 
             last_error: Exception | None = None
             batch_contents: Dict[str, str] | None = None
             for _ in range(self.max_retries):
+                await asyncio.sleep(2.0)  # Delay to avoid Groq rate limits between batches
                 try:
                     response = await self.phase3_llm.ainvoke(
                         [
@@ -1164,6 +1340,10 @@ class DeveloperAgent:
                     break
                 except Exception as exc:
                     last_error = exc
+                    if _is_daily_quota_error(exc):
+                        logger.warning("[developer] Batch generation hit daily quota; using deterministic file fallbacks.")
+                        break
+                    await _handle_groq_rate_limit(exc)
 
             if batch_contents is None:
                 logger.warning(
@@ -1416,5 +1596,16 @@ async def run_developer_agent(input_data: DeveloperAgentInput | Dict[str, Any]) 
     """Workflow entrypoint for Developer Agent."""
     if isinstance(input_data, dict):
         input_data = DeveloperAgentInput.model_validate(input_data)
-    agent = DeveloperAgent()
-    return await agent.execute(input_data)
+    agent = DeveloperAgent(provider="groq")
+    try:
+        return await agent.execute(input_data)
+    except Exception as groq_error:
+        if settings.GEMINI_API_KEY and _is_quota_or_rate_limit_error(groq_error):
+            logger.warning(
+                "[developer] Groq failed due to quota/rate-limit; retrying with Gemini. run_id=%s error=%s",
+                str(input_data.run_id),
+                str(groq_error)[:250],
+            )
+            fallback_agent = DeveloperAgent(provider="gemini")
+            return await fallback_agent.execute(input_data)
+        raise

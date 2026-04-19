@@ -7,12 +7,12 @@ Uses RAG to retrieve relevant research context from Qdrant.
 import logging
 import re
 import json
+import asyncio
 from typing import Dict, Any, List, Optional
-from langchain_openai import ChatOpenAI
-from langchain_core.output_parsers import PydanticOutputParser
+import json_repair
+from openai import AsyncOpenAI
 
 from app.core.config import settings
-from app.core.llm import llm_client
 from app.core.qdrant import qdrant_manager
 from app.schemas.designer import (
     DesignerAgentInput,
@@ -75,18 +75,23 @@ _DOMAIN_STOPWORDS = {
 def _extract_json_object(raw: str) -> Dict[str, Any]:
   text = raw.strip()
   try:
-    parsed = json.loads(text)
+    parsed = json_repair.loads(text)
     if isinstance(parsed, dict):
       return parsed
+    if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict):
+      return parsed[0]
   except Exception:
     pass
 
   start = text.find("{")
   end = text.rfind("}")
   if start != -1 and end != -1 and end > start:
-    parsed = json.loads(text[start : end + 1])
-    if isinstance(parsed, dict):
-      return parsed
+    try:
+      parsed = json_repair.loads(text[start : end + 1])
+      if isinstance(parsed, dict):
+        return parsed
+    except Exception:
+      pass
 
   raise ValueError("Could not parse JSON object from designer response")
 
@@ -103,6 +108,27 @@ def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
     "tpd",
   ]
   return any(marker in message for marker in markers)
+
+
+def _is_daily_token_quota_error(exc: Exception) -> bool:
+  message = str(exc).lower()
+  return "tokens per day" in message or "tpd" in message
+
+
+def _extract_retry_after_seconds(exc: Exception) -> float | None:
+  message = str(exc).lower()
+  # Handles strings like: "Please try again in 3m32.8896s" and "... in 7.8s"
+  match_minutes = re.search(r"please try again in\s+([0-9]+)m([0-9.]+)s", message)
+  if match_minutes:
+    minutes = float(match_minutes.group(1))
+    seconds = float(match_minutes.group(2))
+    return minutes * 60.0 + seconds
+
+  match_seconds = re.search(r"please try again in\s+([0-9.]+)s", message)
+  if match_seconds:
+    return float(match_seconds.group(1))
+
+  return None
 
 
 def _slugify(value: str) -> str:
@@ -394,8 +420,20 @@ def _screen_components_for_step(step_name: str, is_primary: bool, theme: Dict[st
   ]
 
 
+def _to_plain_dict(value: Any) -> Dict[str, Any]:
+  if isinstance(value, dict):
+    return value
+  if hasattr(value, "model_dump"):
+    dumped = value.model_dump()
+    return dumped if isinstance(dumped, dict) else {}
+  if hasattr(value, "dict"):
+    dumped = value.dict()
+    return dumped if isinstance(dumped, dict) else {}
+  return {}
+
+
 def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
-  prd_dict = prd.dict()
+  prd_dict = _to_plain_dict(prd)
   product_vision = prd_dict.get("product_vision", {}) if isinstance(prd_dict.get("product_vision", {}), dict) else {}
   user_stories = list(prd_dict.get("user_stories", []))
   user_flow = list(prd_dict.get("user_flow", []))
@@ -803,15 +841,16 @@ class DesignerAgent:
 
     def __init__(self, provider: Optional[str] = None):
       selected_provider = (provider or "groq").lower()
+
       if selected_provider == "gemini":
         api_key = settings.GEMINI_API_KEY
-        base_url = settings.GEMINI_BASE_URL
         model = settings.GEMINI_MODEL
+        base_url = settings.GEMINI_BASE_URL
       else:
         selected_provider = "groq"
         api_key = settings.OPENAI_API_KEY
-        base_url = settings.OPENAI_BASE_URL
         model = settings.OPENAI_MODEL
+        base_url = settings.OPENAI_BASE_URL
 
       if not api_key:
         raise ValueError(f"Missing API key for provider={selected_provider}")
@@ -819,15 +858,13 @@ class DesignerAgent:
       self.provider = selected_provider
       self.model_name = model
 
-      self.llm = ChatOpenAI(
-          model=model,
-          temperature=0.3,
+      self.client = AsyncOpenAI(
           api_key=api_key,
           base_url=base_url,
           max_retries=0,
       )
-      self.parser = PydanticOutputParser(pydantic_object=DesignSpec)
-      self.max_retries = 1
+      self.max_retries = 5
+      self.fallback_enabled = bool(settings.GEMINI_API_KEY)
 
     async def _retrieve_research_context(
         self,
@@ -840,12 +877,16 @@ class DesignerAgent:
             if not embedding_ids:
                 return []
 
+            # Lazy import keeps Designer usable even if optional langchain stack is unavailable.
+            from app.core.llm import llm_client
+
             query_vector = await llm_client.embed_query(query)
-
             results = await qdrant_manager.retrieve_research_context(
-                query=query, query_vector=query_vector, run_id=run_id, limit=5
+                query=query,
+                query_vector=query_vector,
+                run_id=run_id,
+                limit=5,
             )
-
             return [r["text"] for r in results]
         except Exception as e:
             print(f"Warning: Failed to retrieve research context: {e}")
@@ -853,7 +894,7 @@ class DesignerAgent:
 
     def _build_design_prompt(self, prd: PRD, research_context: List[str]) -> str:
         """Build the design prompt from PRD and research context."""
-        prd_dict = prd.dict()
+        prd_dict = _to_plain_dict(prd)
 
         product_vision = prd_dict.get("product_vision", {})
         user_stories = prd_dict.get("user_stories", [])
@@ -919,7 +960,7 @@ Design screens and APIs to support these features.
 {user_flow_section}
 
 Now create the complete design specification.
-{self.parser.get_format_instructions()}"""
+Return only a valid JSON object matching the specified design_spec schema."""
 
         return prompt
 
@@ -956,24 +997,26 @@ Now create the complete design specification.
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                response = await self.llm.ainvoke(
-                    [
-                        ("system", DESIGNER_SYSTEM_PROMPT),
-                        ("human", prompt),
-                    ]
+                response = await self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": DESIGNER_SYSTEM_PROMPT},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.7,
+                    response_format={"type": "json_object"},
                 )
-                try:
-                  result = self.parser.parse(response.content)
-                except Exception:
-                  parsed = _extract_json_object(response.content)
-                  spec_payload = parsed.get("design_spec") if isinstance(parsed.get("design_spec"), dict) else parsed
-                  result = DesignSpec.model_validate(spec_payload)
+
+                raw_content = (response.choices[0].message.content or "").strip()
+                parsed = _extract_json_object(raw_content)
+                spec_payload = parsed.get("design_spec") if isinstance(parsed.get("design_spec"), dict) else parsed
+                result = DesignSpec.model_validate(spec_payload)
 
                 logger.info(
-                  "[designer] generated design_spec via llm with screens=%s flows=%s apis=%s",
-                  len(result.screens),
-                  len(result.interaction_flows),
-                  len(result.api_spec),
+                    "[designer] generated design_spec via llm with screens=%s flows=%s apis=%s",
+                    len(result.screens),
+                    len(result.interaction_flows),
+                    len(result.api_spec),
                 )
 
                 return DesignerAgentOutput(run_id=run_id, design_spec=result)
@@ -981,10 +1024,20 @@ Now create the complete design specification.
             except Exception as e:
                 last_error = e
                 logger.warning("[designer] attempt %s failed: %s", attempt + 1, str(e)[:250])
-                if _is_quota_or_rate_limit_error(e):
-                    logger.warning("[designer] quota/rate-limit detected; skipping further retries and using fallback path")
-                    break
+                if self.provider == "gemini" and _is_quota_or_rate_limit_error(e):
+                    # Gemini quota exhaustion should immediately fall back to deterministic spec.
+                    raise RuntimeError(f"GEMINI_QUOTA_EXCEEDED: {e}") from e
+                if self.provider == "groq" and self.fallback_enabled and _is_daily_token_quota_error(e):
+                    # Daily quota exhaustion won't recover quickly; hand over to Gemini at wrapper level.
+                    raise RuntimeError(f"GROQ_DAILY_QUOTA_EXCEEDED: {e}") from e
                 if attempt < self.max_retries - 1:
+                    if _is_quota_or_rate_limit_error(e):
+                        retry_after = _extract_retry_after_seconds(e)
+                        wait_seconds = 30.0 if retry_after is None else min(retry_after + 1.0, 45.0)
+                        logger.warning("[designer] quota/rate-limit detected; sleeping for %.1fs", wait_seconds)
+                        await asyncio.sleep(wait_seconds)
+                    else:
+                        await asyncio.sleep(5.0)
                     continue
 
         raise Exception(
@@ -1003,7 +1056,41 @@ async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) ->
     run_id = str(input_data.run_id)
     
     agent = DesignerAgent(provider="groq")
-    output = await agent.run(input_data)
+    output: DesignerAgentOutput | None = None
+
+    try:
+      output = await agent.run(input_data)
+    except Exception as groq_error:
+      if settings.GEMINI_API_KEY and _is_quota_or_rate_limit_error(groq_error):
+        logger.warning(
+          "[designer] Groq failed due to quota/rate-limit; retrying with Gemini. run_id=%s error=%s",
+          run_id,
+          str(groq_error)[:250],
+        )
+        try:
+          agent = DesignerAgent(provider="gemini")
+          output = await agent.run(input_data)
+        except Exception as gemini_error:
+          logger.warning(
+            "[designer] Gemini fallback failed; using deterministic PRD-based spec. run_id=%s error=%s",
+            run_id,
+            str(gemini_error)[:250],
+          )
+      else:
+        logger.warning(
+          "[designer] Non-retriable LLM error; using deterministic PRD-based spec. run_id=%s error=%s",
+          run_id,
+          str(groq_error)[:250],
+        )
+
+    if output is None:
+      deterministic_spec = _build_design_spec_from_prd(prd=input_data.prd)
+      logger.info("[designer] generated deterministic design_spec run_id=%s", run_id)
+      return {
+        "run_id": run_id,
+        "design_spec": deterministic_spec,
+      }
+
     design_spec = output.design_spec.model_dump(mode="json") if hasattr(output.design_spec, 'model_dump') else output.design_spec
     logger.info(
       "[designer] Successfully generated LLM design_spec run_id=%s provider=%s model=%s screens=%s flows=%s apis=%s",

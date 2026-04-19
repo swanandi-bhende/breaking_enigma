@@ -118,6 +118,58 @@ def _resolve_shadow_mode(config: Optional[Dict[str, Any]]) -> bool:
     return _as_bool(settings.RUN_STORE_SHADOW_MODE, default=False)
 
 
+def _resolve_flush_batch_size(config: Optional[Dict[str, Any]]) -> int:
+    raw = (
+        (config or {}).get("flush_batch_size")
+        or (config or {}).get("run_store_flush_batch_size")
+        or settings.RUN_STORE_FLUSH_BATCH_SIZE
+    )
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(settings.RUN_STORE_FLUSH_BATCH_SIZE)
+    return max(1, value)
+
+
+def _resolve_flush_interval_ms(config: Optional[Dict[str, Any]]) -> int:
+    raw = (
+        (config or {}).get("flush_interval_ms")
+        or (config or {}).get("run_store_flush_interval_ms")
+        or settings.RUN_STORE_FLUSH_INTERVAL_MS
+    )
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(settings.RUN_STORE_FLUSH_INTERVAL_MS)
+    return max(10, value)
+
+
+def _resolve_checkpoint_interval_ms(config: Optional[Dict[str, Any]]) -> int:
+    raw = (
+        (config or {}).get("checkpoint_interval_ms")
+        or (config or {}).get("run_store_checkpoint_interval_ms")
+        or settings.RUN_STORE_CHECKPOINT_INTERVAL_MS
+    )
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(settings.RUN_STORE_CHECKPOINT_INTERVAL_MS)
+    return max(500, value)
+
+
+def _resolve_checkpoint_every_n_events(config: Optional[Dict[str, Any]]) -> int:
+    raw = (
+        (config or {}).get("checkpoint_every_n_events")
+        or (config or {}).get("run_store_checkpoint_every_n_events")
+        or settings.RUN_STORE_CHECKPOINT_EVERY_N_EVENTS
+    )
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(settings.RUN_STORE_CHECKPOINT_EVERY_N_EVENTS)
+    return max(1, value)
+
+
 def _is_canary_run(run_id: str, canary_percent: int) -> bool:
     if canary_percent <= 0:
         return False
@@ -642,17 +694,10 @@ def get_run_store(run_id: str, config: Optional[Dict[str, Any]]) -> RunStore:
     elif backend == "legacy_db":
         store = LegacyDbRunStore()
     else:
-        batch_size = (config or {}).get("run_store_flush_batch_size", settings.RUN_STORE_FLUSH_BATCH_SIZE)
-        flush_interval_ms = (config or {}).get("run_store_flush_interval_ms", settings.RUN_STORE_FLUSH_INTERVAL_MS)
-        checkpoint_interval_ms = (
-            (config or {}).get("run_store_checkpoint_interval_ms", settings.RUN_STORE_CHECKPOINT_INTERVAL_MS)
-        )
-        checkpoint_every_n_events = (
-            (config or {}).get(
-                "run_store_checkpoint_every_n_events",
-                settings.RUN_STORE_CHECKPOINT_EVERY_N_EVENTS,
-            )
-        )
+        batch_size = _resolve_flush_batch_size(config)
+        flush_interval_ms = _resolve_flush_interval_ms(config)
+        checkpoint_interval_ms = _resolve_checkpoint_interval_ms(config)
+        checkpoint_every_n_events = _resolve_checkpoint_every_n_events(config)
 
         if shadow_mode:
             logger.info("run_store rollout=shadow run_id=%s", run_id)

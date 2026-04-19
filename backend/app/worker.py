@@ -28,6 +28,39 @@ logger = get_task_logger(__name__)
 # and trigger asyncpg "another operation is in progress" errors.
 _WORKER_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
 
+
+async def _run_store_flush_loop(
+    run_store: Any,
+    stop_event: asyncio.Event,
+    interval_ms: int,
+) -> None:
+    """
+    Internal persistence watchdog for async store mode.
+
+    The run store already batches on queue size/time, but this loop provides
+    a worker-level timer that periodically forces queue drain and guarantees a
+    final flush on shutdown paths.
+    """
+    interval_seconds = max(0.1, int(interval_ms) / 1000.0)
+
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
+            break
+        except asyncio.TimeoutError:
+            pass
+
+        try:
+            await run_store.flush()
+        except Exception:
+            logger.exception("run_store periodic flush failed")
+
+    # Force a final drain when the pipeline finishes or fails.
+    try:
+        await run_store.flush()
+    except Exception:
+        logger.exception("run_store final flush failed")
+
 # ── Celery app instance ───────────────────────────────────────────────────────
 
 celery_app = Celery(
@@ -118,8 +151,19 @@ async def _execute_pipeline(
     from app.core.events import EventType
     from app.workflow.graph import pipeline_graph
 
+    flush_stop: asyncio.Event | None = None
+    flush_task: asyncio.Task[None] | None = None
+
     try:
         run_store = get_run_store(run_id=run_id, config=config)
+        flush_interval_ms = int(
+            (config or {}).get(
+                "flush_interval_ms",
+                (config or {}).get("run_store_flush_interval_ms", settings.RUN_STORE_FLUSH_INTERVAL_MS),
+            )
+        )
+        flush_stop = asyncio.Event()
+        flush_task = asyncio.create_task(_run_store_flush_loop(run_store, flush_stop, flush_interval_ms))
 
         # Step 1 — Orchestrator initialises the state
         initial = await run_orchestrator(
@@ -175,6 +219,15 @@ async def _execute_pipeline(
 
         # Re-raise so Celery marks this task as FAILURE
         raise
+
+    finally:
+        if flush_stop is not None:
+            flush_stop.set()
+        if flush_task is not None:
+            try:
+                await flush_task
+            except Exception:
+                logger.exception("run_store flush loop shutdown failed run_id=%s", run_id)
 
 
 # ── Convenience enqueue helper ────────────────────────────────────────────────
