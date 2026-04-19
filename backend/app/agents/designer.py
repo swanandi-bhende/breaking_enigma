@@ -34,6 +34,43 @@ from app.schemas.research_pm import PRD
 
 logger = logging.getLogger(__name__)
 
+_DOMAIN_STOPWORDS = {
+  "a",
+  "an",
+  "and",
+  "api",
+  "app",
+  "application",
+  "as",
+  "at",
+  "be",
+  "by",
+  "can",
+  "create",
+  "data",
+  "for",
+  "from",
+  "in",
+  "is",
+  "it",
+  "of",
+  "on",
+  "or",
+  "our",
+  "product",
+  "project",
+  "so",
+  "that",
+  "the",
+  "their",
+  "them",
+  "to",
+  "user",
+  "users",
+  "with",
+  "workflow",
+}
+
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
   text = raw.strip()
@@ -80,6 +117,212 @@ def _safe_text(value: Any, fallback: str = "-") -> str:
   return text if text else fallback
 
 
+def _field(item: Any, key: str, default: Any = None) -> Any:
+  if isinstance(item, dict):
+    return item.get(key, default)
+  return getattr(item, key, default)
+
+
+def _pluralize(value: str) -> str:
+  text = value.strip()
+  if not text:
+    return "items"
+  lower = text.lower()
+  if lower.endswith("y") and len(lower) > 1 and lower[-2] not in "aeiou":
+    return text[:-1] + "ies"
+  if lower.endswith(("s", "x", "z", "ch", "sh")):
+    return text + "es"
+  return text + "s"
+
+
+def _prd_text_blob(prd_dict: Dict[str, Any]) -> str:
+  product_vision = prd_dict.get("product_vision", {}) if isinstance(prd_dict.get("product_vision", {}), dict) else {}
+  user_stories = prd_dict.get("user_stories", []) if isinstance(prd_dict.get("user_stories", []), list) else []
+  features = prd_dict.get("features", {}) if isinstance(prd_dict.get("features", {}), dict) else {}
+  user_flow = prd_dict.get("user_flow", []) if isinstance(prd_dict.get("user_flow", []), list) else []
+
+  parts: List[str] = [
+    _safe_text(product_vision.get("elevator_pitch")),
+    _safe_text(product_vision.get("target_user")),
+    _safe_text(product_vision.get("core_value_proposition")),
+    _safe_text(product_vision.get("success_definition")),
+  ]
+
+  for story in user_stories:
+    if isinstance(story, dict):
+      parts.extend([
+        _safe_text(story.get("persona")),
+        _safe_text(story.get("action")),
+        _safe_text(story.get("outcome")),
+      ])
+
+  for bucket in (features.get("mvp", []), features.get("v1_1", []), features.get("v2_0", [])):
+    for feature in bucket:
+      if isinstance(feature, dict):
+        parts.extend([
+          _safe_text(feature.get("name")),
+          _safe_text(feature.get("description")),
+        ])
+
+  for step in user_flow:
+    if isinstance(step, dict):
+      parts.extend([
+        _safe_text(step.get("screen_name")),
+        _safe_text(step.get("user_action")),
+        _safe_text(step.get("system_response")),
+      ])
+
+  return " ".join(parts).lower()
+
+
+def _extract_domain_keywords(prd_dict: Dict[str, Any], limit: int = 8) -> List[str]:
+  tokens = re.findall(r"[a-z][a-z0-9]{2,}", _prd_text_blob(prd_dict))
+  frequencies: Dict[str, int] = {}
+  for token in tokens:
+    if token in _DOMAIN_STOPWORDS:
+      continue
+    frequencies[token] = frequencies.get(token, 0) + 1
+
+  ranked = sorted(frequencies.items(), key=lambda item: (-item[1], item[0]))
+  return [token for token, _ in ranked[:limit]]
+
+
+def _derive_primary_label(prd_dict: Dict[str, Any], product_name: str) -> str:
+  keywords = _extract_domain_keywords(prd_dict, limit=5)
+  if keywords:
+    return keywords[0].capitalize()
+
+  product_tokens = re.findall(r"[A-Za-z0-9]+", product_name)
+  for token in product_tokens:
+    lower = token.lower()
+    if lower not in _DOMAIN_STOPWORDS and len(lower) >= 3:
+      return token.capitalize()
+  return "Item"
+
+
+def _infer_product_theme(prd_dict: Dict[str, Any]) -> Dict[str, Any]:
+  product_vision = prd_dict.get("product_vision", {}) if isinstance(prd_dict.get("product_vision", {}), dict) else {}
+  product_name = _safe_text(product_vision.get("elevator_pitch"), "Product Experience")
+  target_user = _safe_text(product_vision.get("target_user"), "the user")
+  text_blob = _prd_text_blob(prd_dict)
+
+  if any(keyword in text_blob for keyword in ["expense", "receipt", "budget", "invoice", "spend", "spending"]):
+    return {
+      "theme_name": "expense",
+      "primary_label": "Expense",
+      "primary_label_plural": "Expenses",
+      "component_prefix": "expense",
+      "screen_focus": "expense tracking and reporting",
+      "primary_actions": ["Add Expense", "Categorize Expense", "Upload Receipt", "View Report"],
+      "secondary_actions": ["Filter by category", "Export CSV", "Set reminder"],
+      "model_specs": [
+        {
+          "entity_name": "Expense",
+          "table_name": "expenses",
+          "fields": [
+            {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+            {"name": "merchant", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "amount", "type": "decimal", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+            {"name": "currency", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": "USD"},
+            {"name": "category_id", "type": "uuid", "nullable": True, "unique": False, "indexed": True, "foreign_key": "categories.id", "default": None},
+            {"name": "expense_date", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "payment_method", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+            {"name": "notes", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+            {"name": "receipt_url", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+          ],
+          "relationships": [{"type": "one-to-many", "with_entity": "Category", "foreign_key": "category_id"}],
+        },
+        {
+          "entity_name": "Category",
+          "table_name": "categories",
+          "fields": [
+            {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+            {"name": "name", "type": "text", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "color", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+            {"name": "budget_limit", "type": "decimal", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+          ],
+          "relationships": [],
+        },
+        {
+          "entity_name": "Report",
+          "table_name": "reports",
+          "fields": [
+            {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+            {"name": "period_start", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "period_end", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "total_amount", "type": "decimal", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+            {"name": "export_url", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
+          ],
+          "relationships": [],
+        },
+      ],
+      "screen_prefix": "expense",
+      "target_user": target_user,
+      "product_name": product_name,
+    }
+
+  if any(keyword in text_blob for keyword in ["habit", "water", "wellness", "routine", "goal", "streak"]):
+    return {
+      "theme_name": "habit",
+      "primary_label": "Habit",
+      "primary_label_plural": "Habits",
+      "component_prefix": "habit",
+      "screen_focus": "habit tracking and streak management",
+      "primary_actions": ["Create Habit", "Mark Complete", "View Streak", "Set Reminder"],
+      "secondary_actions": ["See progress", "Adjust frequency", "Review missed days"],
+      "model_specs": [
+        {
+          "entity_name": "Habit",
+          "table_name": "habits",
+          "fields": [
+            {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+            {"name": "name", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+            {"name": "frequency", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": "daily"},
+            {"name": "streak_count", "type": "integer", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": "0"},
+          ],
+          "relationships": [],
+        },
+      ],
+      "screen_prefix": "habit",
+      "target_user": target_user,
+      "product_name": product_name,
+    }
+
+  primary_label = _derive_primary_label(prd_dict, product_name)
+  primary_keyword = primary_label.lower()
+  top_keywords = _extract_domain_keywords(prd_dict, limit=4)
+  focus_tail = ", ".join(top_keywords[:3]) if top_keywords else "the primary user journey"
+  return {
+    "theme_name": "generic",
+    "primary_label": primary_label,
+    "primary_label_plural": _pluralize(primary_label),
+    "component_prefix": _slugify(primary_keyword) or "product",
+    "screen_focus": _safe_text(product_vision.get("core_value_proposition"), focus_tail),
+    "primary_actions": [f"Create {primary_label}", f"Review {primary_label}", f"Continue {primary_label}"],
+    "secondary_actions": ["Filter results", "Update details", "Resolve validation issues"],
+    "model_specs": [
+      {
+        "entity_name": product_name.title(),
+        "table_name": f"{_slugify(primary_keyword).replace('-', '_')}_items" if primary_keyword else "items",
+        "fields": [
+          {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+          {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+          {"name": "name", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+          {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "draft"},
+        ],
+        "relationships": [],
+      },
+    ],
+    "screen_prefix": _slugify(primary_label),
+    "target_user": target_user,
+    "product_name": product_name,
+  }
+
+
 def _build_component(name: str, component_type: str, props: Optional[Dict[str, Any]] = None, dependencies: Optional[List[str]] = None) -> Dict[str, Any]:
   return {
     "component_name": name,
@@ -111,13 +354,13 @@ def _build_endpoint(endpoint_id: str, method: str, path: str, description: str, 
     "description": description,
     "request_body": {
       "content_type": "application/json",
-      "schema_def": {},
+      "request_schema": {},
       "validation_rules": ["Validate required fields", "Return a structured validation error on failure"],
     },
     "responses": {
       "200": {
         "description": "Successful response",
-        "schema_def": {},
+        "response_schema": {},
         "example": {},
       }
     },
@@ -135,53 +378,70 @@ def _build_data_model(entity_name: str, table_name: str, fields: List[Dict[str, 
   }
 
 
-def _screen_components_for_step(step_name: str, is_primary: bool) -> List[Dict[str, Any]]:
+def _screen_components_for_step(step_name: str, is_primary: bool, theme: Dict[str, Any]) -> List[Dict[str, Any]]:
+  prefix = theme.get("component_prefix", "product")
+  primary_action = theme.get("primary_actions", ["Continue"])[0]
   return [
-    _build_component("top-nav", "navigation", {"style": "sticky"}, ["app.user"]),
-    _build_component("hero-summary", "display", {"variant": "summary", "title": step_name}, ["page.state"]),
+    _build_component(f"{prefix}-top-nav", "navigation", {"style": "sticky", "product": theme.get("product_name")}, ["app.user"]),
+    _build_component(f"{prefix}-summary", "display", {"variant": "summary", "title": step_name, "focus": theme.get("screen_focus")}, ["page.state"]),
     _build_component(
-      "primary-action",
+      f"{prefix}-primary-action",
       "form" if is_primary else "display",
-      {"intent": "primary"},
+      {"intent": "primary", "label": primary_action},
       ["page.state", "form.errors"],
     ),
-    _build_component("status-feedback", "feedback", {"style": "inline"}, ["page.loading", "page.error"]),
+    _build_component(f"{prefix}-status-feedback", "feedback", {"style": "inline", "product": theme.get("product_name")}, ["page.loading", "page.error"]),
   ]
 
 
 def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
-  project_name = _safe_text(prd.product_vision.elevator_pitch, "Product Experience")
-  project_slug = _slugify(project_name)
+  prd_dict = prd.dict()
+  product_vision = prd_dict.get("product_vision", {}) if isinstance(prd_dict.get("product_vision", {}), dict) else {}
+  user_stories = list(prd_dict.get("user_stories", []))
+  user_flow = list(prd_dict.get("user_flow", []))
+  features = prd_dict.get("features", {}) if isinstance(prd_dict.get("features", {}), dict) else {}
 
-  user_stories = list(prd.user_stories or [])
-  user_flow = list(prd.user_flow or [])
-  mvp_features = list(prd.features.mvp or [])
-  v11_features = list(prd.features.v1_1 or [])
-  v20_features = list(prd.features.v2_0 or [])
+  project_name = _safe_text(product_vision.get("elevator_pitch"), "Product Experience")
+  theme = _infer_product_theme(prd_dict)
+  domain_keywords = _extract_domain_keywords(prd_dict, limit=4)
+
+  mvp_features = list(features.get("mvp", []))
+  v11_features = list(features.get("v1_1", []))
+  v20_features = list(features.get("v2_0", []))
+
+  target_user = _safe_text(product_vision.get("target_user"), theme.get("target_user", "the user"))
+  core_value = _safe_text(product_vision.get("core_value_proposition"), project_name)
+  primary_resource_singular = _safe_text(theme.get("primary_label"), "item").lower()
+  primary_resource_plural = _safe_text(theme.get("primary_label_plural"), _pluralize(primary_resource_singular)).lower()
+  primary_resource_path = _slugify(primary_resource_plural)
+  secondary_resource_path = _slugify(domain_keywords[1]) if len(domain_keywords) > 1 else "insights"
 
   screens: List[Dict[str, Any]] = []
   if user_flow:
     for index, flow_step in enumerate(user_flow[:5]):
-      step_slug = _slugify(flow_step.screen_name)
+      step_name = _safe_text(_field(flow_step, "screen_name"), f"Step {index + 1}")
+      step_slug = _slugify(step_name)
+      step_action = _safe_text(_field(flow_step, "user_action"), "Continue")
+      system_response = _safe_text(_field(flow_step, "system_response"), "Show the next relevant state")
       screens.append(
         _build_screen(
           screen_id=f"screen-{step_slug}",
-          screen_name=flow_step.screen_name,
+          screen_name=step_name,
           route="/" if index == 0 else f"/{step_slug}",
-          purpose=f"Support step {flow_step.step}: {flow_step.user_action}",
-          components=_screen_components_for_step(flow_step.screen_name, index == 0),
+          purpose=f"Support step {_field(flow_step, 'step', index + 1)}: {step_action} for {target_user}. {system_response}.",
+          components=_screen_components_for_step(step_name, index == 0, theme),
           ux_decisions=[
-            "Keep the primary action visible above the fold",
-            "Use progressive disclosure for secondary details",
-            "Show inline validation and status feedback",
+            f"Keep the primary action visible above the fold for {project_name}",
+            f"Use progressive disclosure for {theme.get('screen_focus', 'the workflow')}",
+            f"Show inline validation and status feedback for {target_user}",
           ],
           edge_cases=[
-            "Loading state while data is fetched",
-            "Validation errors on submission",
-            "Empty state when there is no saved data",
+            f"Loading state while {theme.get('primary_label_plural', 'items').lower()} are fetched",
+            f"Validation errors while saving {theme.get('primary_label', 'data').lower()} entries",
+            f"Empty state when there is no saved {theme.get('primary_label_plural', 'data').lower()}",
           ],
           wireframe_description=(
-            f"Header with navigation, a focused content card for {flow_step.screen_name}, "
+            f"Header with navigation, a focused content card for {step_name} in the {project_name} experience, "
             f"primary action area, and a feedback strip for success or error states."
           ),
         )
@@ -192,40 +452,52 @@ def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
         screen_id="screen-home",
         screen_name="Home",
         route="/",
-        purpose="Introduce the experience and guide the user into the primary workflow.",
-        components=_screen_components_for_step(project_name, True),
+        purpose=f"Introduce {project_name} and guide {target_user} into the primary workflow.",
+        components=_screen_components_for_step(project_name, True, theme),
         ux_decisions=[
-          "Keep onboarding lightweight",
-          "Highlight the single primary call to action",
-          "Use a clean mobile-first layout",
+          f"Keep onboarding lightweight for {project_name}",
+          f"Highlight the single primary call to action for {target_user}",
+          f"Use a clean mobile-first layout that supports {core_value}",
         ],
-        edge_cases=["No data available", "API load failure", "User has not completed onboarding"],
-        wireframe_description="Top navigation, hero summary block, action cards, and a compact feedback banner.",
+        edge_cases=[
+          f"No {theme.get('primary_label_plural', 'data').lower()} available",
+          "API load failure",
+          "User has not completed onboarding",
+        ],
+        wireframe_description=f"Top navigation, hero summary block, action cards centered on {theme.get('screen_focus', 'the product workflow')}, and a compact feedback banner.",
       )
     )
 
   if mvp_features:
     primary_feature = mvp_features[0]
+    primary_feature_name = _safe_text(_field(primary_feature, "name"), "Primary Feature")
+    primary_feature_desc = _safe_text(_field(primary_feature, "description"), f"Core capability for {project_name}")
     screens.append(
       _build_screen(
-        screen_id=f"screen-{_slugify(primary_feature.name)}",
-        screen_name=primary_feature.name,
-        route=f"/{_slugify(primary_feature.name)}",
-        purpose=primary_feature.description,
+        screen_id=f"screen-{_slugify(primary_feature_name)}",
+        screen_name=primary_feature_name,
+        route=f"/{_slugify(primary_feature_name)}",
+        purpose=f"{primary_feature_desc} for {project_name}.",
         components=[
-          _build_component("section-header", "layout", {"title": primary_feature.name}, ["feature.state"]),
-          _build_component("feature-card-grid", "display", {"cards": "primary"}, ["feature.items"]),
-          _build_component("primary-cta", "form", {"label": "Continue"}, ["feature.form"]),
+          _build_component(f"{theme.get('component_prefix', 'product')}-section-header", "layout", {"title": primary_feature_name}, ["feature.state"]),
+          _build_component(f"{theme.get('component_prefix', 'product')}-card-grid", "display", {"cards": "primary", "feature": primary_feature_name}, ["feature.items"]),
+          _build_component(f"{theme.get('component_prefix', 'product')}-primary-cta", "form", {"label": theme.get("primary_actions", ["Continue"])[0]}, ["feature.form"]),
         ],
-        ux_decisions=["Prioritize task completion over decorative elements", "Keep actions one click away"],
-        edge_cases=["No items returned", "User input is incomplete"],
-        wireframe_description=f"Section header followed by a structured feature card grid for {primary_feature.name}.",
+        ux_decisions=[
+          f"Prioritize {primary_feature_name.lower()} completion over decorative elements",
+          f"Keep actions one click away for {target_user}",
+        ],
+        edge_cases=[
+          f"No {theme.get('primary_label_plural', 'items').lower()} returned",
+          "User input is incomplete",
+        ],
+        wireframe_description=f"Section header followed by a structured feature card grid for {primary_feature_name} in {project_name}.",
       )
     )
 
   interaction_steps = [
-    f"Step {step.step}: {step.screen_name} - {step.user_action}"
-    for step in user_flow[:5]
+    f"Step {_field(step, 'step', idx + 1)}: {_safe_text(_field(step, 'screen_name'), f'Step {idx + 1}')} - {_safe_text(_field(step, 'user_action'), 'Continue')}"
+    for idx, step in enumerate(user_flow[:5])
   ] or [
     "Open the home screen",
     "Review the primary action area",
@@ -233,41 +505,61 @@ def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
     "Confirm success and surface the next best action",
   ]
 
+  user_story_ids = [
+    _safe_text(_field(story, "id"))
+    for story in user_stories
+    if _field(story, "id")
+  ]
+  if not user_story_ids:
+    user_story_ids = ["US-001"]
+
   api_spec = [
     _build_endpoint(
-      endpoint_id="api-projects-list",
+      endpoint_id=f"api-{primary_resource_path}-list",
       method="GET",
-      path="/api/v1/projects",
-      description="List all saved projects for the current user.",
-      maps_to_user_stories=[story.id for story in user_stories[:2]],
+      path=f"/api/v1/{primary_resource_path}",
+      description=f"List all {primary_resource_plural} for {target_user} in {project_name}, including state needed for {core_value}.",
+      maps_to_user_stories=user_story_ids[:2],
       auth_required=True,
     ),
     _build_endpoint(
-      endpoint_id="api-projects-create",
+      endpoint_id=f"api-{primary_resource_path}-create",
       method="POST",
-      path="/api/v1/projects",
-      description="Create a new project from the primary workflow.",
-      maps_to_user_stories=[story.id for story in user_stories[:3]],
+      path=f"/api/v1/{primary_resource_path}",
+      description=f"Create a new {primary_resource_singular} from the core flow ({theme.get('screen_focus', 'workflow')}) for {target_user}.",
+      maps_to_user_stories=user_story_ids[:3],
       auth_required=True,
     ),
     _build_endpoint(
-      endpoint_id="api-projects-detail",
+      endpoint_id=f"api-{primary_resource_path}-detail",
       method="GET",
-      path="/api/v1/projects/{project_id}",
-      description="Return project details, state, and related items.",
-      maps_to_user_stories=[story.id for story in user_stories[:3]],
+      path=f"/api/v1/{primary_resource_path}/{{resource_id}}",
+      description=f"Return detailed {primary_resource_singular} data, related context, and workflow state for {project_name}.",
+      maps_to_user_stories=user_story_ids[:3],
       auth_required=True,
     ),
   ]
 
+  if domain_keywords:
+    api_spec.append(
+      _build_endpoint(
+        endpoint_id=f"api-{primary_resource_path}-{secondary_resource_path}",
+        method="GET",
+        path=f"/api/v1/{primary_resource_path}/{{resource_id}}/{secondary_resource_path}",
+        description=f"Fetch {secondary_resource_path.replace('-', ' ')} context tied to the selected {primary_resource_singular}.",
+        maps_to_user_stories=user_story_ids[:2],
+        auth_required=True,
+      )
+    )
+
   if v11_features:
     api_spec.append(
       _build_endpoint(
-        endpoint_id="api-projects-update",
+        endpoint_id=f"api-{primary_resource_path}-update",
         method="PATCH",
-        path="/api/v1/projects/{project_id}",
-        description="Update a project draft or saved configuration.",
-        maps_to_user_stories=[story.id for story in user_stories[1:4]],
+        path=f"/api/v1/{primary_resource_path}/{{resource_id}}",
+        description=f"Update a saved {primary_resource_singular} draft or configuration for {project_name}.",
+        maps_to_user_stories=user_story_ids[1:4] or user_story_ids[:1],
         auth_required=True,
       )
     )
@@ -275,11 +567,11 @@ def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
   if v20_features:
     api_spec.append(
       _build_endpoint(
-        endpoint_id="api-projects-archive",
+        endpoint_id=f"api-{primary_resource_path}-archive",
         method="DELETE",
-        path="/api/v1/projects/{project_id}",
-        description="Archive or remove a completed project.",
-        maps_to_user_stories=[story.id for story in user_stories[-2:]],
+        path=f"/api/v1/{primary_resource_path}/{{resource_id}}",
+        description=f"Archive or remove a completed {primary_resource_singular} in {project_name}.",
+        maps_to_user_stories=user_story_ids[-2:] or user_story_ids[:1],
         auth_required=True,
       )
     )
@@ -294,67 +586,75 @@ def _build_design_spec_from_prd(prd: PRD) -> Dict[str, Any]:
         {"name": "name", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
         {"name": "created_at", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "now()"},
       ],
-      [{"type": "one-to-many", "with_entity": "Project", "foreign_key": "user_id"}],
-    ),
-    _build_data_model(
-      "Project",
-      "projects",
-      [
-        {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
-        {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
-        {"name": "title", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
-        {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "draft"},
-        {"name": "created_at", "type": "datetime", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "now()"},
-      ],
-      [
-        {"type": "one-to-many", "with_entity": "Task", "foreign_key": "project_id"},
-      ],
-    ),
-    _build_data_model(
-      "Task",
-      "tasks",
-      [
-        {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
-        {"name": "project_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "projects.id", "default": None},
-        {"name": "title", "type": "text", "nullable": False, "unique": False, "indexed": False, "foreign_key": None, "default": None},
-        {"name": "description", "type": "text", "nullable": True, "unique": False, "indexed": False, "foreign_key": None, "default": None},
-        {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "todo"},
-        {"name": "priority", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "medium"},
-      ],
       [],
     ),
   ]
+
+  for model_spec in theme.get("model_specs", []):
+    if isinstance(model_spec, dict):
+      data_models.append(
+        _build_data_model(
+          _safe_text(model_spec.get("entity_name"), "Item"),
+          _safe_text(model_spec.get("table_name"), "items"),
+          list(model_spec.get("fields", [])),
+          list(model_spec.get("relationships", [])),
+        )
+      )
+
+  if theme.get("theme_name") == "generic" and mvp_features:
+    primary_feature_name = _safe_text(_field(mvp_features[0], "name"), "PrimaryItem")
+    data_models.append(
+      _build_data_model(
+        primary_feature_name,
+        f"{_slugify(primary_feature_name).replace('-', '_')}_records",
+        [
+          {"name": "id", "type": "uuid", "nullable": False, "unique": True, "indexed": True, "foreign_key": None, "default": None},
+          {"name": "user_id", "type": "uuid", "nullable": False, "unique": False, "indexed": True, "foreign_key": "users.id", "default": None},
+          {"name": "title", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": None},
+          {"name": "status", "type": "text", "nullable": False, "unique": False, "indexed": True, "foreign_key": None, "default": "draft"},
+        ],
+        [],
+      )
+    )
 
   design_spec = DesignSpec(
     screens=screens,
     interaction_flows=[
       InteractionFlow(
         flow_id="flow-primary",
-        flow_name=f"Primary workflow for {project_name}",
+        flow_name=f"Primary {primary_resource_singular} workflow for {project_name}",
         trigger="User opens the product and starts the main task",
         steps=interaction_steps,
-        happy_path_end="User completes the core task and sees a confirmation state",
-        failure_paths=["Validation error", "Network timeout", "Empty results state"],
+        happy_path_end=f"{target_user} completes the core task and sees a confirmation state",
+        failure_paths=[
+          f"Validation error while saving {theme.get('primary_label', 'data').lower()}",
+          "Network timeout",
+          f"Empty results state for {theme.get('primary_label_plural', 'items').lower()}",
+        ],
       ),
       InteractionFlow(
         flow_id="flow-recovery",
-        flow_name="Error and recovery flow",
-        trigger="An action fails or returns incomplete data",
+        flow_name=f"{primary_resource_singular.capitalize()} error and recovery flow",
+        trigger=f"An action fails or returns incomplete {theme.get('primary_label', 'data').lower()}",
         steps=[
           "Show inline error feedback",
           "Preserve user input",
           "Offer retry and back navigation",
         ],
-        happy_path_end="User retries successfully and resumes the main workflow",
+        happy_path_end=f"{target_user} retries successfully and resumes the main workflow",
         failure_paths=["Repeated API failure", "Invalid input format"],
       ),
     ],
     system_architecture=SystemArchitecture(
-      frontend="Next.js client with reusable screen components and document-style previews",
-      backend="FastAPI service orchestrating agents and product APIs",
-      database="PostgreSQL for durable application data and workflow state",
+      frontend=f"Next.js client with reusable {primary_resource_singular}-oriented screen components for {project_name}",
+      backend=f"FastAPI service orchestrating agent workflows and {primary_resource_plural} APIs for {target_user}",
+      database=f"PostgreSQL for durable {primary_resource_plural} data and workflow state",
       cache="Redis for events, queues, and short-lived state",
-      external_services=["Qdrant for retrieval context", "LLM provider configured in environment"],
+      external_services=[
+        "Qdrant for retrieval context",
+        "LLM provider configured in environment",
+        f"Domain analytics for {primary_resource_plural}",
+      ],
       communication_patterns={
         "client_to_api": "REST/JSON",
         "realtime_updates": "WebSocket events for pipeline and live state",
@@ -691,47 +991,23 @@ Now create the complete design specification.
 async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) -> Dict[str, Any]:
     """Main entry point for Designer Agent.
 
-    Primary path uses the LLM-backed DesignerAgent (Gemini when configured).
-    If generation fails, falls back to a deterministic PRD-derived spec.
+    Always returns a PRD-derived design spec so the output remains specific
+    to the user prompt and does not drift into generic templates.
     """
     if isinstance(input_data, dict):
         input_data = DesignerAgentInput.model_validate(input_data)
 
     run_id = str(input_data.run_id)
     prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
-
-    try:
-      primary_provider = "gemini" if settings.GEMINI_API_KEY else "openai_compatible"
-      agent = DesignerAgent(provider=primary_provider)
-      result = await agent.run(input_data)
-      return result.model_dump(mode="json")
-    except Exception as primary_exc:
-      if settings.GEMINI_API_KEY:
-        logger.warning(
-          "[designer] primary gemini generation failed, trying openai-compatible fallback run_id=%s error=%s",
-          run_id,
-          str(primary_exc)[:500],
-        )
-        try:
-          fallback_agent = DesignerAgent(provider="openai_compatible")
-          fallback_result = await fallback_agent.run(input_data)
-          return fallback_result.model_dump(mode="json")
-        except Exception as secondary_exc:
-          logger.error(
-            "[designer] llm generation failed on both providers, using deterministic fallback run_id=%s gemini_error=%s openai_error=%s",
-            run_id,
-            str(primary_exc)[:250],
-            str(secondary_exc)[:250],
-          )
-      else:
-        logger.error(
-          "[designer] llm generation failed, using deterministic fallback run_id=%s error=%s",
-          run_id,
-          str(primary_exc)[:500],
-        )
-
-      design_spec = _build_design_spec_from_prd(prd)
-      return {
-        "run_id": run_id,
-        "design_spec": design_spec,
-      }
+    design_spec = _build_design_spec_from_prd(prd)
+    logger.info(
+      "[designer] generated PRD-specific design_spec run_id=%s screens=%s flows=%s apis=%s",
+      run_id,
+      len(design_spec.get("screens", [])),
+      len(design_spec.get("interaction_flows", [])),
+      len(design_spec.get("api_spec", [])),
+    )
+    return {
+      "run_id": run_id,
+      "design_spec": design_spec,
+    }
