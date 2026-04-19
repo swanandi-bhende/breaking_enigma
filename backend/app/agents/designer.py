@@ -802,28 +802,32 @@ class DesignerAgent:
     """Designer Agent for design specification generation."""
 
     def __init__(self, provider: Optional[str] = None):
-        selected_provider = provider or ("gemini" if settings.GEMINI_API_KEY else "openai_compatible")
-        if selected_provider == "gemini":
-            api_key = settings.GEMINI_API_KEY
-            base_url = settings.GEMINI_BASE_URL
-            model = settings.GEMINI_MODEL
-        else:
-            api_key = settings.OPENAI_API_KEY
-            base_url = settings.OPENAI_BASE_URL
-            model = settings.OPENAI_MODEL
+      selected_provider = (provider or "groq").lower()
+      if selected_provider == "gemini":
+        api_key = settings.GEMINI_API_KEY
+        base_url = settings.GEMINI_BASE_URL
+        model = settings.GEMINI_MODEL
+      else:
+        selected_provider = "groq"
+        api_key = settings.OPENAI_API_KEY
+        base_url = settings.OPENAI_BASE_URL
+        model = settings.OPENAI_MODEL
 
-        self.provider = selected_provider
-        self.model_name = model
+      if not api_key:
+        raise ValueError(f"Missing API key for provider={selected_provider}")
 
-        self.llm = ChatOpenAI(
-            model=model,
-            temperature=0.3,
-            api_key=api_key,
-            base_url=base_url,
+      self.provider = selected_provider
+      self.model_name = model
+
+      self.llm = ChatOpenAI(
+          model=model,
+          temperature=0.3,
+          api_key=api_key,
+          base_url=base_url,
           max_retries=0,
-        )
-        self.parser = PydanticOutputParser(pydantic_object=DesignSpec)
-        self.max_retries = 1
+      )
+      self.parser = PydanticOutputParser(pydantic_object=DesignSpec)
+      self.max_retries = 1
 
     async def _retrieve_research_context(
         self,
@@ -992,35 +996,24 @@ async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) ->
     """Main entry point for Designer Agent.
 
     Uses the LLM to generate a design spec specific to the user prompt.
-    Falls back to a PRD-derived heuristic spec if the LLM fails (e.g., rate limits).
     """
     if isinstance(input_data, dict):
         input_data = DesignerAgentInput.model_validate(input_data)
 
     run_id = str(input_data.run_id)
     
-    try:
-        agent = DesignerAgent()
-        output = await agent.run(input_data)
-        design_spec = output.design_spec.model_dump(mode="json") if hasattr(output.design_spec, 'model_dump') else output.design_spec
-        logger.info(
-            "[designer] Successfully generated LLM design_spec run_id=%s screens=%s flows=%s apis=%s",
-            run_id,
-            len(design_spec.get("screens", [])),
-            len(design_spec.get("interaction_flows", [])),
-            len(design_spec.get("api_spec", [])),
-        )
-    except Exception as e:
-        logger.warning("[designer] LLM generation failed (%s), falling back to heuristics.", e)
-        prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
-        design_spec = _build_design_spec_from_prd(prd)
-        logger.info(
-            "[designer] generated PRD-specific design_spec run_id=%s screens=%s flows=%s apis=%s",
-            run_id,
-            len(design_spec.get("screens", [])),
-            len(design_spec.get("interaction_flows", [])),
-            len(design_spec.get("api_spec", [])),
-        )
+    agent = DesignerAgent(provider="groq")
+    output = await agent.run(input_data)
+    design_spec = output.design_spec.model_dump(mode="json") if hasattr(output.design_spec, 'model_dump') else output.design_spec
+    logger.info(
+      "[designer] Successfully generated LLM design_spec run_id=%s provider=%s model=%s screens=%s flows=%s apis=%s",
+      run_id,
+      agent.provider,
+      agent.model_name,
+      len(design_spec.get("screens", [])),
+      len(design_spec.get("interaction_flows", [])),
+      len(design_spec.get("api_spec", [])),
+    )
 
     return {
       "run_id": run_id,

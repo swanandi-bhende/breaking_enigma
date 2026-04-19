@@ -11,9 +11,9 @@ from app.schemas.agents import DeveloperAgentInput
 logger = logging.getLogger(__name__)
 
 
-PHASE1_MODEL = "llama-3.3-70b-versatile"
-PHASE2_MODEL = "llama-3.3-70b-versatile"
-PHASE3_MODEL = "llama-3.3-70b-versatile"
+PHASE1_MODEL = settings.GEMINI_MODEL
+PHASE2_MODEL = settings.GEMINI_MODEL
+PHASE3_MODEL = settings.GEMINI_MODEL
 
 DEVELOPER_SYSTEM_PROMPT = """You are a senior full-stack developer with deep expertise in Next.js 14, TypeScript, Prisma ORM, and Tailwind CSS.
 
@@ -92,6 +92,55 @@ Do not include additional keys.
 def _safe_slug(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "project"
+
+
+def _field(item: Any, key: str, default: Any = None) -> Any:
+    if isinstance(item, dict):
+        return item.get(key, default)
+    return getattr(item, key, default)
+
+
+def _prd_keywords(prd: Dict[str, Any], limit: int = 6) -> List[str]:
+    vision = prd.get("product_vision", {}) if isinstance(prd.get("product_vision", {}), dict) else {}
+    parts: List[str] = [
+        str(vision.get("elevator_pitch", "")),
+        str(vision.get("target_user", "")),
+        str(vision.get("core_value_proposition", "")),
+        str(vision.get("success_definition", "")),
+    ]
+
+    stories = prd.get("user_stories", []) if isinstance(prd.get("user_stories", []), list) else []
+    for story in stories:
+        parts.extend([
+            str(_field(story, "persona", "")),
+            str(_field(story, "action", "")),
+            str(_field(story, "outcome", "")),
+        ])
+
+    features = prd.get("features", {}) if isinstance(prd.get("features", {}), dict) else {}
+    for feature in features.get("mvp", []) if isinstance(features.get("mvp", []), list) else []:
+        parts.extend([
+            str(_field(feature, "name", "")),
+            str(_field(feature, "description", "")),
+        ])
+
+    text = " ".join(parts).lower()
+    tokens = [
+        token
+        for token in re.findall(r"[a-z][a-z0-9]{2,}", text)
+        if token not in {"the", "and", "for", "with", "that", "this", "from", "user", "users", "product", "project", "workflow", "data", "build", "create", "plan"}
+    ]
+
+    ordered: List[str] = []
+    seen = set()
+    for token in tokens:
+        if token in seen:
+            continue
+        ordered.append(token)
+        seen.add(token)
+        if len(ordered) >= limit:
+            break
+    return ordered
 
 
 def _extract_json_object(raw: str) -> Dict[str, Any]:
@@ -306,15 +355,18 @@ def _matches_target_path(candidate: str, targets: List[str]) -> bool:
 
 def _fallback_plan(prd: Dict[str, Any], design_spec: Dict[str, Any]) -> Dict[str, Any]:
     product_vision = prd.get("product_vision", {})
+    keywords = _prd_keywords(prd, limit=6)
+    primary_topic = keywords[0] if keywords else str(product_vision.get("elevator_pitch", "generated-product")).lower()
+    secondary_topic = keywords[1] if len(keywords) > 1 else "workflow"
     api_spec = design_spec.get("api_spec", []) if isinstance(design_spec.get("api_spec", []), list) else []
     screens = design_spec.get("screens", []) if isinstance(design_spec.get("screens", []), list) else []
     data_models = design_spec.get("data_models", []) if isinstance(design_spec.get("data_models", []), list) else []
 
     return {
         "tech_stack_confirmation": [
-            "Frontend: Next.js 14 + TypeScript + Tailwind CSS",
-            "Backend: FastAPI + Celery + Redis",
-            "Data: PostgreSQL + Qdrant",
+            f"Frontend: Next.js 14 + TypeScript + Tailwind CSS for {primary_topic} flows",
+            f"Backend: FastAPI + Celery + Redis orchestrating {secondary_topic} work",
+            f"Data: PostgreSQL + Qdrant supporting {primary_topic} state and retrieval",
         ],
         "dependency_ordered_build_sequence": [
             "Set up project config and environment",
@@ -324,9 +376,9 @@ def _fallback_plan(prd: Dict[str, Any], design_spec: Dict[str, Any]) -> Dict[str
             "Add tests and deployment checks",
         ],
         "key_architectural_decisions": [
-            "Use modular route handlers aligned to design API endpoints",
-            "Map screen contracts to dedicated UI components",
-            "Keep data models aligned with design spec entities",
+            f"Use modular route handlers aligned to {primary_topic}-specific API endpoints",
+            f"Map screen contracts to dedicated UI components for {primary_topic}",
+            f"Keep data models aligned with design spec entities and {secondary_topic} relationships",
         ],
         "technical_execution_plan": [
             "Translate PRD must-have stories into backend/frontend module boundaries and ownership.",
@@ -340,8 +392,8 @@ def _fallback_plan(prd: Dict[str, Any], design_spec: Dict[str, Any]) -> Dict[str
             "Add worker-safe retry, timeout, and logging strategy for external dependencies.",
         ],
         "frontend_execution_plan": [
-            "Map each screen contract to a typed page/component module.",
-            "Use typed API clients aligned with design endpoints and user stories.",
+            f"Map each screen contract to a typed page/component module for {primary_topic}.",
+            f"Use typed API clients aligned with design endpoints and user stories for {secondary_topic}.",
             "Implement loading/error/empty states for all core journeys.",
         ],
         "data_and_infra_plan": [
@@ -834,23 +886,26 @@ def _ensure_detailed_plan(
 class DeveloperAgent:
     def __init__(self):
         self.name = "Developer Agent"
+        self.provider = "gemini"
+        if not settings.GEMINI_API_KEY:
+            raise ValueError("GEMINI_API_KEY is required for Developer Agent")
         self.llm = ChatOpenAI(
             model=PHASE1_MODEL,
             temperature=0.3,
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,
+            api_key=settings.GEMINI_API_KEY,
+            base_url=settings.GEMINI_BASE_URL,
         )
         self.phase2_llm = ChatOpenAI(
             model=PHASE2_MODEL,
             temperature=0.2,
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,
+            api_key=settings.GEMINI_API_KEY,
+            base_url=settings.GEMINI_BASE_URL,
         )
         self.phase3_llm = ChatOpenAI(
             model=PHASE3_MODEL,
             temperature=0.2,
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,
+            api_key=settings.GEMINI_API_KEY,
+            base_url=settings.GEMINI_BASE_URL,
         )
         self.max_retries = 2
 
@@ -942,6 +997,7 @@ class DeveloperAgent:
 
     async def _generate_plan(self, prd: Dict[str, Any], design_spec: Dict[str, Any], qa_feedback: Dict[str, Any]) -> Dict[str, Any]:
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
+        keywords = _prd_keywords(prd, limit=8)
         user_stories = prd.get("user_stories", [])
         screens = design_spec.get("screens", [])
         api_spec = design_spec.get("api_spec", [])
@@ -954,6 +1010,7 @@ class DeveloperAgent:
             "Keep required_files count between 18 and 40.\\n"
             "Ensure files include detailed layering: routes/services/schemas/clients/components/hooks/state/tests/docs.\\n\\n"
             f"Product Vision: {product}\\n"
+            f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\n"
             f"User Stories Count: {len(user_stories) if isinstance(user_stories, list) else 0}\\n"
             f"Screens: {json.dumps(screens[:8], ensure_ascii=True)}\\n"
             f"API Spec: {json.dumps(api_spec[:12], ensure_ascii=True)}\\n"
@@ -976,8 +1033,9 @@ class DeveloperAgent:
             except Exception as exc:
                 last_error = exc
 
-        logger.warning("[developer] Plan generation failed, using fallback plan: %s", str(last_error)[:250])
-        return _fallback_plan(prd, design_spec)
+        raise RuntimeError(
+            f"Developer phase 1 plan generation failed after retries: {str(last_error)[:250]}"
+        ) from last_error
 
     async def _generate_file_manifest(
         self,
@@ -987,6 +1045,7 @@ class DeveloperAgent:
         qa_feedback: Dict[str, Any],
     ) -> List[Dict[str, str]]:
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
+        keywords = _prd_keywords(prd, limit=8)
         screens = design_spec.get("screens", [])
         api_spec = design_spec.get("api_spec", [])
         data_models = design_spec.get("data_models", [])
@@ -998,6 +1057,7 @@ class DeveloperAgent:
             "Target between 24 and 48 files based on actual complexity from context.\\n"
             "Include balanced coverage across config, schema/data, utilities, app pages, API routes, UI components, and environment setup when applicable.\\n\\n"
             f"Product Vision: {product}\\n"
+            f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n"
             f"Implementation Plan: {json.dumps(plan, ensure_ascii=True)}\\n"
             f"Screens: {json.dumps(screens[:12], ensure_ascii=True)}\\n"
             f"API Spec: {json.dumps(api_spec[:20], ensure_ascii=True)}\\n"
@@ -1058,6 +1118,7 @@ class DeveloperAgent:
         api_calls = 0
 
         product = prd.get("product_vision", {}).get("elevator_pitch", "")
+        keywords = _prd_keywords(prd, limit=8)
         features = prd.get("features", {})
         user_stories = prd.get("user_stories", [])
         api_spec = design_spec.get("api_spec", [])
@@ -1073,6 +1134,7 @@ class DeveloperAgent:
                 "No stubs. No TODOs. No placeholder content.\\n\\n"
                 f"Batch Number: {index + 1} of {len(batches)}\\n"
                 f"Product Vision: {product}\\n"
+                f"Domain Keywords: {json.dumps(keywords, ensure_ascii=True)}\\n"
                 f"PRD Features: {json.dumps(features, ensure_ascii=True)}\\n"
                 f"User Stories: {json.dumps(user_stories[:16], ensure_ascii=True)}\\n"
                 f"API Endpoints: {json.dumps(api_spec[:20], ensure_ascii=True)}\\n"
@@ -1155,6 +1217,7 @@ class DeveloperAgent:
         phase3_api_calls: int,
     ) -> Dict[str, Any]:
         product_name = str(prd.get("product_vision", {}).get("elevator_pitch") or "Generated Product")
+        keywords = _prd_keywords(prd, limit=8)
         product_slug = _safe_slug(product_name)
 
         story_ids = _infer_story_ids(prd)
@@ -1249,7 +1312,7 @@ class DeveloperAgent:
             "run_id": run_id,
             "task_id": f"dev-{run_id}",
             "status": status,
-            "summary": f"Phase 1, 2, and 3 completed for {product_name}: plan, manifest, and file content generated for {len(files_created)} files.",
+            "summary": f"Phase 1, 2, and 3 completed for {product_name}: plan, manifest, and file content generated for {len(files_created)} files using keywords {', '.join(keywords[:4]) or 'none'}.",
             "files_created": files_created,
             "features_implemented": features_implemented,
             "features_skipped": [],
@@ -1313,7 +1376,7 @@ class DeveloperAgent:
 
     async def execute(self, input_data: DeveloperAgentInput) -> Dict[str, Any]:
         run_id = str(input_data.run_id)
-        logger.info("[developer] generating output run_id=%s", run_id)
+        logger.info("[developer] generating output provider=%s run_id=%s", self.provider, run_id)
 
         prd = input_data.prd.model_dump(mode="json")
         design_spec = input_data.design_spec.model_dump(mode="json")
