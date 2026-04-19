@@ -9,6 +9,7 @@ const AGENTS = [
   { id: 'designer', label: 'Designer', colorVar: '--agent-designer' },
   { id: 'developer', label: 'Developer', colorVar: '--agent-developer' },
   { id: 'qa', label: 'QA', colorVar: '--agent-qa' },
+  { id: 'bugfix', label: 'BugFix', colorVar: '--agent-qa' },
 ];
 
 const PARALLEL_AGENTS = [

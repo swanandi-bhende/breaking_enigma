@@ -68,6 +68,9 @@ class PipelineState(TypedDict):
     qa_output: Optional[Dict[str, Any]]
     """Full QAAgentOutput object (most recent QA run)."""
 
+    remediation_output: Optional[Dict[str, Any]]
+    """Full BugFixAgentOutput object used to drive QA remediation loops."""
+
     docs_output: Optional[Dict[str, Any]]
     """Full DocumentationAgentOutput object."""
 
@@ -125,6 +128,7 @@ def initial_state(
                 "designer",
                 "developer",
                 "qa",
+                "bugfix",
                 "documentation",
             ]
         },
@@ -134,6 +138,7 @@ def initial_state(
         design_spec=None,
         developer_output=None,
         qa_output=None,
+        remediation_output=None,
         docs_output=None,
         qa_iteration=0,
         max_qa_iterations=cfg.get("max_qa_iterations", 3),

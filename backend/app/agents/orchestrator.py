@@ -31,6 +31,20 @@ from app.workflow.state import PipelineState, initial_state
 
 logger = logging.getLogger(__name__)
 
+
+def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    markers = [
+        "429",
+        "too many requests",
+        "rate limit",
+        "quota",
+        "exceeded your current quota",
+        "tpm",
+        "tpd",
+    ]
+    return any(marker in text for marker in markers)
+
 # ── System prompt for idea normalisation ─────────────────────────────────────
 
 _NORMALISE_SYSTEM_PROMPT = """\
@@ -82,6 +96,7 @@ async def _normalise_idea(
     client = AsyncOpenAI(
         api_key=settings.OPENAI_API_KEY,
         base_url=settings.OPENAI_BASE_URL,
+        max_retries=0,
     )
     user_prompt = f'Product idea: "{idea}"\nHint — target platform: {target_platform_hint}'
 
@@ -108,6 +123,9 @@ async def _normalise_idea(
             )
         except Exception as exc:
             logger.warning("[orchestrator] Attempt %d: LLM call failed: %s", attempt, str(exc)[:220])
+            if _is_quota_or_rate_limit_error(exc):
+                logger.warning("[orchestrator] Quota/rate-limit detected — using fallback brief immediately")
+                return _fallback_brief(idea, target_platform_hint)
 
         if attempt == 3:
             logger.error("[orchestrator] All attempts failed — using fallback brief")

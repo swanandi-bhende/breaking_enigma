@@ -75,7 +75,7 @@ class TestInitialState:
         assert state["project_brief"] is None
 
     def test_all_agents_start_pending(self, base_state):
-        for agent in ["research", "product_manager", "designer", "developer", "qa", "documentation"]:
+        for agent in ["research", "product_manager", "designer", "developer", "qa", "bugfix", "documentation"]:
             assert base_state["phases"][agent]["status"] == "PENDING"
 
     def test_config_defaults(self, base_state):
@@ -113,7 +113,7 @@ class TestSchemaValidation:
     def test_agent_schemas_registry_complete(self):
         expected_agents = {
             "orchestrator", "research", "product_manager", "designer",
-            "developer", "qa", "devops", "documentation"
+            "developer", "qa", "bugfix", "devops", "documentation"
         }
         assert set(AGENT_SCHEMAS.keys()) == expected_agents
 
@@ -183,7 +183,7 @@ class TestQARouting:
 
     def test_qa_fail_iteration_1_routes_to_developer(self, run_id):
         state = _make_qa_state("FAIL", 1, 3, "developer", run_id)
-        assert route_after_qa(state) == "developer"
+        assert route_after_qa(state) == "bugfix"
 
     def test_qa_fail_at_max_iteration_routes_to_end(self, run_id):
         state = _make_qa_state("FAIL", 3, 3, "human_review", run_id)

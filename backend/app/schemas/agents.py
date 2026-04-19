@@ -463,6 +463,36 @@ class DeveloperStatus(str, Enum):
     FAILED = "failed"
 
 
+class DeveloperRequiredFile(BaseModel):
+    path: str
+    language: Optional[str] = None
+    description: Optional[str] = None
+
+
+class DeveloperImplementationPlan(BaseModel):
+    project_slug: Optional[str] = None
+    tech_stack_confirmation: List[str] = Field(default_factory=list)
+    dependency_ordered_build_sequence: List[str] = Field(default_factory=list)
+    key_architectural_decisions: List[str] = Field(default_factory=list)
+    required_files: List[DeveloperRequiredFile] = Field(default_factory=list)
+    phase2_file_manifest: List[DeveloperRequiredFile] = Field(default_factory=list)
+    mapped_user_story_ids: List[str] = Field(default_factory=list)
+    technical_execution_plan: List[str] = Field(default_factory=list)
+    backend_execution_plan: List[str] = Field(default_factory=list)
+    frontend_execution_plan: List[str] = Field(default_factory=list)
+    data_and_infra_plan: List[str] = Field(default_factory=list)
+    testing_and_rollout_plan: List[str] = Field(default_factory=list)
+    risk_mitigation_plan: List[str] = Field(default_factory=list)
+
+
+class DeveloperGenerationPhase(BaseModel):
+    phase: int
+    name: str
+    status: str
+    api_calls: int
+    details: Optional[str] = None
+
+
 class DeveloperAgentOutput(BaseModel):
     run_id: UUID
     task_id: str
@@ -474,6 +504,8 @@ class DeveloperAgentOutput(BaseModel):
     tests_written: List[str] = Field(default_factory=list)
     tech_debt_logged: List[str] = Field(default_factory=list)
     self_check_results: Optional[DeveloperSelfCheck] = None
+    implementation_plan: Optional[DeveloperImplementationPlan] = None
+    generation_phases: List[DeveloperGenerationPhase] = Field(default_factory=list)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -487,6 +519,7 @@ class QAAgentInput(BaseModel):
     design_spec: DesignSpec
     prd: PRD
     iteration: int = 1
+    max_iterations: int = 3
 
 
 class CoverageStatus(str, Enum):
@@ -522,6 +555,15 @@ class BugSeverity(str, Enum):
     LOW = "low"
 
 
+class BugOwner(str, Enum):
+    PRODUCT_MANAGER = "product_manager"
+    SYSTEM_ARCHITECT = "system_architect"
+    DESIGNER = "designer"
+    DEVELOPER = "developer"
+    ORCHESTRATOR = "orchestrator"
+    QA = "qa"
+
+
 class BugStatus(str, Enum):
     OPEN = "open"
     IN_PROGRESS = "in_progress"
@@ -536,6 +578,8 @@ class Bug(BaseModel):
     description: str
     affected_file: str
     affected_user_story: Optional[str] = None
+    root_cause_phase: Optional[BugOwner] = None
+    fix_owner: Optional[BugOwner] = None
     reproduction_steps: List[str] = Field(default_factory=list)
     suggested_fix: Optional[str] = None
     status: BugStatus = BugStatus.OPEN
@@ -553,6 +597,45 @@ class RoutingDecision(BaseModel):
     fix_instructions: List[Dict[str, Any]] = Field(default_factory=list)
 
 
+class CrossDocumentIssue(BaseModel):
+    issue_id: str
+    severity: BugSeverity
+    description: str
+    source_documents: List[str] = Field(default_factory=list)
+    owner: BugOwner = BugOwner.DEVELOPER
+    fix_instruction: str
+
+
+class JourneyStepResult(BaseModel):
+    step: int
+    action: str
+    status: CriterionResult
+    reason: Optional[str] = None
+
+
+class JourneySimulationResult(BaseModel):
+    journey_id: str
+    journey_name: str
+    completion_status: CriterionResult
+    completion_percent: float = Field(default=0.0, ge=0, le=100)
+    blocked_at_step: Optional[int] = None
+    notes: Optional[str] = None
+    steps: List[JourneyStepResult] = Field(default_factory=list)
+
+
+class QAScoreBreakdown(BaseModel):
+    feature_coverage: float = Field(default=0.0, ge=0, le=100)
+    consistency: float = Field(default=0.0, ge=0, le=100)
+    journey_completion: float = Field(default=0.0, ge=0, le=100)
+    code_quality: float = Field(default=0.0, ge=0, le=100)
+    weighted_total: float = Field(default=0.0, ge=0, le=100)
+
+
+class MetaQualityReport(BaseModel):
+    verdict_consistent: bool = True
+    notes: List[str] = Field(default_factory=list)
+
+
 class QAVerdict(str, Enum):
     PASS = "PASS"
     FAIL = "FAIL"
@@ -564,10 +647,46 @@ class QAAgentOutput(BaseModel):
     qa_score: float = Field(..., ge=0, le=100)
     iteration: int
     traceability_matrix: List[TraceabilityEntry] = Field(default_factory=list)
+    cross_document_issues: List[CrossDocumentIssue] = Field(default_factory=list)
+    journey_simulations: List[JourneySimulationResult] = Field(default_factory=list)
     bugs: List[Bug] = Field(default_factory=list)
+    score_breakdown: Optional[QAScoreBreakdown] = None
     routing_decision: RoutingDecision
+    meta_quality_report: Optional[MetaQualityReport] = None
     must_have_coverage_percent: float = Field(default=0.0, ge=0, le=100)
     critical_bugs_count: int = 0
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# BugFix Agent
+# ════════════════════════════════════════════════════════════════════════════
+
+
+class BugFixAgentInput(BaseModel):
+    run_id: UUID
+    iteration: int = 1
+    qa_output: QAAgentOutput
+    developer_output: DeveloperAgentOutput
+    design_spec: DesignSpec
+    prd: PRD
+
+
+class BugFixAction(BaseModel):
+    bug_id: Optional[str] = None
+    owner: Optional[BugOwner] = None
+    instruction: str
+    path_hint: Optional[str] = None
+    priority: int = Field(default=2, ge=1, le=5)
+
+
+class BugFixAgentOutput(BaseModel):
+    run_id: UUID
+    iteration: int
+    summary: str
+    target_files: List[str] = Field(default_factory=list)
+    remediation_strategy: List[str] = Field(default_factory=list)
+    qa_feedback: QAFeedback
+    actions: List[BugFixAction] = Field(default_factory=list)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -677,6 +796,10 @@ AGENT_SCHEMAS: Dict[str, Dict[str, type]] = {
     "qa": {
         "input": QAAgentInput,
         "output": QAAgentOutput,
+    },
+    "bugfix": {
+        "input": BugFixAgentInput,
+        "output": BugFixAgentOutput,
     },
     "devops": {
         "input": DevOpsAgentInput,

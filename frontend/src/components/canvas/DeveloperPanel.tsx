@@ -24,6 +24,12 @@ interface ImplementationPlan {
   build_sequence?: string[];
   dependency_ordered_build_sequence?: string[];
   key_architectural_decisions?: string[];
+  technical_execution_plan?: string[];
+  backend_execution_plan?: string[];
+  frontend_execution_plan?: string[];
+  data_and_infra_plan?: string[];
+  testing_and_rollout_plan?: string[];
+  risk_mitigation_plan?: string[];
   required_files?: Array<{
     path: string;
     language?: string;
@@ -145,6 +151,15 @@ function fallbackBuildSequence(files: GeneratedFile[]): string[] {
   ];
 }
 
+function fallbackTechnicalExecutionPlan(projectName: string): string[] {
+  return [
+    `Define implementation boundaries for ${projectName} by mapping each must-have story to explicit frontend and backend modules.`,
+    'Lock API contracts and schema validation before coding integration layers to avoid downstream drift.',
+    'Implement backend route/service/data layers first for critical flows, then connect typed frontend modules.',
+    'Run contract tests, journey tests, and rollout checks prior to final packaging and documentation handoff.',
+  ];
+}
+
 function fallbackArchitectureDecisions(projectName: string): string[] {
   return [
     'Adopt contract-first implementation to keep frontend, backend, and worker interfaces synchronized.',
@@ -187,6 +202,36 @@ function buildDocumentText(payload: DeveloperPayload): string {
   lines.push('Architecture Decisions');
   const architectureDecisions = asArray<string>(plan.key_architectural_decisions || plan.architecture_decisions);
   architectureDecisions.forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Technical Implementation Plan');
+  asArray<string>(plan.technical_execution_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Backend Execution Plan');
+  asArray<string>(plan.backend_execution_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Frontend Execution Plan');
+  asArray<string>(plan.frontend_execution_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Data And Infrastructure Plan');
+  asArray<string>(plan.data_and_infra_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Testing And Rollout Plan');
+  asArray<string>(plan.testing_and_rollout_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Risk Mitigation Plan');
+  asArray<string>(plan.risk_mitigation_plan).forEach((item) => lines.push(`- ${item}`));
+  lines.push('');
+
+  lines.push('Required Files From Plan');
+  asArray<{ path?: string; language?: string; description?: string }>(plan.required_files).forEach((item) => {
+    lines.push(`- ${asText(item.path)} | ${asText(item.language)} | ${asText(item.description)}`);
+  });
   lines.push('');
 
   lines.push('Generated Files');
@@ -338,6 +383,15 @@ export default function DeveloperPanel({ payload }: { payload: DeveloperPayload 
   const resolvedTechStack = techStackItems.length > 0 ? techStackItems : fallbackTechStack(files);
   const resolvedBuildSequence = sequenceItems.length > 0 ? sequenceItems : fallbackBuildSequence(files);
   const resolvedArchitecturalDecisions = decisionItems.length > 0 ? decisionItems : fallbackArchitectureDecisions(projectName);
+  const technicalExecutionPlan = toCleanStringArray(plan.technical_execution_plan);
+  const backendExecutionPlan = toCleanStringArray(plan.backend_execution_plan);
+  const frontendExecutionPlan = toCleanStringArray(plan.frontend_execution_plan);
+  const dataInfraPlan = toCleanStringArray(plan.data_and_infra_plan);
+  const testingRolloutPlan = toCleanStringArray(plan.testing_and_rollout_plan);
+  const riskPlan = toCleanStringArray(plan.risk_mitigation_plan);
+  const resolvedTechnicalExecutionPlan = technicalExecutionPlan.length > 0
+    ? technicalExecutionPlan
+    : fallbackTechnicalExecutionPlan(projectName);
 
   return (
     <div className="bg-surface border border-border rounded-lg p-6 space-y-6">
@@ -383,10 +437,63 @@ export default function DeveloperPanel({ payload }: { payload: DeveloperPayload 
               <p className="text-xs text-text-secondary">Phase {phase.phase}</p>
               <p className="text-sm text-text-primary font-semibold mt-1">{phase.name}</p>
               <p className="text-xs text-text-secondary mt-1">{phase.status} | API calls: {phase.api_calls}</p>
-              {phase.details ? <p className="text-xs text-text-primary/90 mt-2 leading-5">{phase.details}</p> : null}
             </article>
           ))}
         </div>
+        <p className="text-xs text-text-secondary">
+          Detailed implementation content is exported through the Download PDF action.
+        </p>
+      </section>
+
+      <section className="bg-bg-base border border-border rounded-md p-4 space-y-3">
+        <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Technical Implementation Plan</h4>
+        <ul className="space-y-1 text-sm text-text-primary">
+          {resolvedTechnicalExecutionPlan.map((item, index) => (
+            <li key={`tech-plan-${index}`}>{item}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <article className="bg-bg-base border border-border rounded-md p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Backend Plan</h4>
+          <ul className="space-y-1 text-sm text-text-primary">
+            {backendExecutionPlan.length > 0 ? backendExecutionPlan.map((item, index) => (
+              <li key={`backend-plan-${index}`}>{item}</li>
+            )) : <li>Backend implementation tasks will be generated from API contract and data model details.</li>}
+          </ul>
+        </article>
+        <article className="bg-bg-base border border-border rounded-md p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Frontend Plan</h4>
+          <ul className="space-y-1 text-sm text-text-primary">
+            {frontendExecutionPlan.length > 0 ? frontendExecutionPlan.map((item, index) => (
+              <li key={`frontend-plan-${index}`}>{item}</li>
+            )) : <li>Frontend implementation tasks will be generated from screen contracts and journey requirements.</li>}
+          </ul>
+        </article>
+      </section>
+
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <article className="bg-bg-base border border-border rounded-md p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Data & Infrastructure Plan</h4>
+          <ul className="space-y-1 text-sm text-text-primary">
+            {dataInfraPlan.length > 0 ? dataInfraPlan.map((item, index) => (
+              <li key={`infra-plan-${index}`}>{item}</li>
+            )) : <li>Data and infrastructure steps will be generated as schema and deployment details finalize.</li>}
+          </ul>
+        </article>
+        <article className="bg-bg-base border border-border rounded-md p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Testing, Rollout & Risk</h4>
+          <ul className="space-y-1 text-sm text-text-primary">
+            {testingRolloutPlan.map((item, index) => (
+              <li key={`rollout-plan-${index}`}>{item}</li>
+            ))}
+            {riskPlan.map((item, index) => (
+              <li key={`risk-plan-${index}`}>{item}</li>
+            ))}
+            {testingRolloutPlan.length === 0 && riskPlan.length === 0 ? <li>Quality and risk controls will be generated with implementation constraints.</li> : null}
+          </ul>
+        </article>
       </section>
 
       <section className="grid grid-cols-1 md:grid-cols-2 gap-3">

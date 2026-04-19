@@ -61,6 +61,7 @@ _run_pm = _load_agent("app.agents.product_manager", "run_pm_agent")
 _run_designer = _load_agent("app.agents.designer", "run_designer_agent")
 _run_developer = _load_agent("app.agents.developer", "run_developer_agent")
 _run_qa = _load_agent("app.agents.qa", "run_qa_agent")
+_run_bugfix = _load_agent("app.agents.bugfix", "run_bugfix_agent")
 _run_documentation = _load_agent("app.agents.documentation", "run_documentation_agent")
 
 
@@ -185,14 +186,52 @@ async def node_qa(state: PipelineState) -> PipelineState:
     )
 
     if verdict == "FAIL":
-        await publish_event(
-            run_id,
-            EventType.QA_ROUTING_LOOP,
-            metadata={"from": "qa", "to": "developer", "iteration": qa_iter},
-        )
+        route_to = (output.get("routing_decision") or {}).get("route_to", "developer")
+        max_iter = state.get("max_qa_iterations", 3)
+        is_terminal_fail = qa_iter >= max_iter or route_to == "human_review"
+        if is_terminal_fail:
+            state["run_state"] = "FAILED"
+            state["error"] = f"QA failed after {qa_iter}/{max_iter} iterations"
+            state["last_failed_agent"] = "qa"
+            await publish_event(
+                run_id,
+                EventType.PIPELINE_FAILED,
+                metadata={
+                    "reason": state["error"],
+                    "iteration": qa_iter,
+                },
+            )
+
+        if not is_terminal_fail:
+            await publish_event(
+                run_id,
+                EventType.QA_ROUTING_LOOP,
+                metadata={"from": "qa", "to": "bugfix", "iteration": qa_iter},
+            )
 
     await _publish_global_state_snapshot(state)
 
+    return state
+
+
+async def node_bugfix(state: PipelineState) -> PipelineState:
+    iteration = max(1, state.get("qa_iteration", 1))
+    output = await agent_executor("bugfix", _run_bugfix, state, iteration=iteration)
+
+    state = {
+        **state,
+        "remediation_output": output,
+    }
+    state["phases"]["bugfix"]["status"] = "COMPLETE"
+    state["phases"]["bugfix"]["iteration"] = iteration
+
+    await publish_event(
+        state["run_id"],
+        EventType.QA_ROUTING_LOOP,
+        metadata={"from": "bugfix", "to": "developer", "iteration": iteration},
+    )
+
+    await _publish_global_state_snapshot(state)
     return state
 
 
@@ -234,7 +273,7 @@ def route_after_qa(state: PipelineState) -> str:
 
     Rules:
       - QA PASS                               → parallel_final
-      - QA FAIL + iterations < max            → developer (loop)
+    - QA FAIL + iterations < max            → bugfix (loop orchestrator)
       - QA FAIL + iterations >= max           → human_review (END)
       - Pipeline already FAILED (user rejected checkpoint) → END
     """
@@ -254,7 +293,7 @@ def route_after_qa(state: PipelineState) -> str:
         logger.info("[graph] QA max iterations reached → human_review (END)")
         return "__end__"
 
-    # QA FAIL — loop back to developer
+    # QA FAIL — loop through bugfix then developer
     qa_iter = state.get("qa_iteration", 0)
     max_iter = state.get("max_qa_iterations", 3)
 
@@ -265,8 +304,8 @@ def route_after_qa(state: PipelineState) -> str:
         )
         return "__end__"
 
-    logger.info("[graph] QA FAIL (iteration %d/%d) → developer", qa_iter, max_iter)
-    return "developer"
+    logger.info("[graph] QA FAIL (iteration %d/%d) → bugfix", qa_iter, max_iter)
+    return "bugfix"
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -278,9 +317,9 @@ def build_pipeline_graph() -> Any:
     Compile and return the LangGraph StateGraph for the full ADWF pipeline.
 
     Node order:
-        research → product_manager → designer → developer → qa
+                research → product_manager → designer → developer → qa
           ↑                                              |
-          └─── (on FAIL, ≤ max_iterations) ─────────────┘
+                    └─── (on FAIL, ≤ max_iterations) → bugfix ────┘
                                                         |
                                           (on PASS) → parallel_final → END
                                           (max iters) → END (human review)
@@ -296,6 +335,7 @@ def build_pipeline_graph() -> Any:
     graph.add_node("designer", node_designer)
     graph.add_node("developer", node_developer)
     graph.add_node("qa", node_qa)
+    graph.add_node("bugfix", node_bugfix)
     graph.add_node("parallel_final", node_parallel_final)
 
     # ── Entry point ────────────────────────────────────────────────────────────
@@ -307,12 +347,14 @@ def build_pipeline_graph() -> Any:
     graph.add_edge("designer", "developer")
     graph.add_edge("developer", "qa")
 
+    graph.add_edge("bugfix", "developer")
+
     # ── Conditional routing at QA ─────────────────────────────────────────────
     graph.add_conditional_edges(
         "qa",
         route_after_qa,
         {
-            "developer": "developer",           # FAIL loop
+            "bugfix": "bugfix",                 # FAIL loop
             "parallel_final": "parallel_final", # PASS
             "__end__": END,                     # Human review / max retries
         },
@@ -322,7 +364,7 @@ def build_pipeline_graph() -> Any:
     graph.add_edge("parallel_final", END)
 
     compiled = graph.compile()
-    logger.info("[graph] Pipeline graph compiled — %d nodes", 6)
+    logger.info("[graph] Pipeline graph compiled — %d nodes", 7)
     return compiled
 
 

@@ -6,6 +6,7 @@ Uses RAG to retrieve relevant research context from Qdrant.
 
 import logging
 import re
+import json
 from typing import Dict, Any, List, Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.output_parsers import PydanticOutputParser
@@ -32,6 +33,39 @@ from app.schemas.research_pm import PRD
 
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_json_object(raw: str) -> Dict[str, Any]:
+  text = raw.strip()
+  try:
+    parsed = json.loads(text)
+    if isinstance(parsed, dict):
+      return parsed
+  except Exception:
+    pass
+
+  start = text.find("{")
+  end = text.rfind("}")
+  if start != -1 and end != -1 and end > start:
+    parsed = json.loads(text[start : end + 1])
+    if isinstance(parsed, dict):
+      return parsed
+
+  raise ValueError("Could not parse JSON object from designer response")
+
+
+def _is_quota_or_rate_limit_error(exc: Exception) -> bool:
+  message = str(exc).lower()
+  markers = [
+    "429",
+    "too many requests",
+    "quota",
+    "rate limit",
+    "exceeded your current quota",
+    "tpm",
+    "tpd",
+  ]
+  return any(marker in message for marker in markers)
 
 
 def _slugify(value: str) -> str:
@@ -486,9 +520,10 @@ class DesignerAgent:
             temperature=0.3,
             api_key=api_key,
             base_url=base_url,
+          max_retries=0,
         )
         self.parser = PydanticOutputParser(pydantic_object=DesignSpec)
-        self.max_retries = 3
+        self.max_retries = 1
 
     async def _retrieve_research_context(
         self,
@@ -623,7 +658,12 @@ Now create the complete design specification.
                         ("human", prompt),
                     ]
                 )
-                result = self.parser.parse(response.content)
+                try:
+                  result = self.parser.parse(response.content)
+                except Exception:
+                  parsed = _extract_json_object(response.content)
+                  spec_payload = parsed.get("design_spec") if isinstance(parsed.get("design_spec"), dict) else parsed
+                  result = DesignSpec.model_validate(spec_payload)
 
                 logger.info(
                   "[designer] generated design_spec via llm with screens=%s flows=%s apis=%s",
@@ -637,6 +677,9 @@ Now create the complete design specification.
             except Exception as e:
                 last_error = e
                 logger.warning("[designer] attempt %s failed: %s", attempt + 1, str(e)[:250])
+                if _is_quota_or_rate_limit_error(e):
+                    logger.warning("[designer] quota/rate-limit detected; skipping further retries and using fallback path")
+                    break
                 if attempt < self.max_retries - 1:
                     continue
 

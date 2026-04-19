@@ -4,6 +4,7 @@ import { usePipelineStore } from '@/store/pipelineStore';
 import DesignerPanel from '@/components/canvas/DesignerPanel';
 import DeveloperPanel from '@/components/canvas/DeveloperPanel';
 import PRDPanel from '@/components/canvas/PRDPanel';
+import QAPanel from '@/components/canvas/QAPanel';
 
 function formatCurrency(value: number | null | undefined): string {
   if (typeof value !== 'number' || Number.isNaN(value)) return '-';
@@ -159,6 +160,64 @@ function ResearchPanel({ payload }: { payload: any }) {
   );
 }
 
+function BugfixPanel({ payload }: { payload: any }) {
+  const targetFiles = Array.isArray(payload?.target_files) ? payload.target_files : [];
+  const strategy = Array.isArray(payload?.remediation_strategy) ? payload.remediation_strategy : [];
+  const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+
+  return (
+    <div className="space-y-4">
+      <section className="bg-surface border border-border rounded-lg p-5">
+        <h3 className="text-lg font-bold text-[var(--agent-qa)] mb-2">BugFix Remediation Plan</h3>
+        <p className="text-sm text-text-primary">{payload?.summary || 'No remediation summary available.'}</p>
+      </section>
+
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <article className="bg-surface border border-border rounded-lg p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Target Files</h4>
+          {targetFiles.length > 0 ? (
+            <ul className="space-y-1 text-sm text-text-primary max-h-60 overflow-auto pr-1">
+              {targetFiles.map((item: string, index: number) => (
+                <li key={`target-${index}`}>{item}</li>
+              ))}
+            </ul>
+          ) : <p className="text-sm text-text-secondary">No specific files targeted.</p>}
+        </article>
+
+        <article className="bg-surface border border-border rounded-lg p-4 space-y-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Strategy</h4>
+          {strategy.length > 0 ? (
+            <ol className="space-y-1 text-sm text-text-primary list-decimal ml-4">
+              {strategy.map((item: string, index: number) => (
+                <li key={`strategy-${index}`}>{item}</li>
+              ))}
+            </ol>
+          ) : <p className="text-sm text-text-secondary">No strategy steps available.</p>}
+        </article>
+      </section>
+
+      <section className="bg-surface border border-border rounded-lg p-4 space-y-2">
+        <h4 className="text-sm font-semibold uppercase tracking-wide text-text-secondary">Actions</h4>
+        {actions.length > 0 ? (
+          <div className="space-y-2 max-h-72 overflow-auto pr-1">
+            {actions.map((action: any, index: number) => (
+              <article key={`action-${index}`} className="bg-bg-base border border-border rounded-md p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-medium text-text-primary">{action?.bug_id || `Action ${index + 1}`}</p>
+                  <span className="text-xs text-text-secondary">Priority {String(action?.priority || 2)}</span>
+                </div>
+                <p className="text-xs text-text-secondary mt-1">Owner: {String(action?.owner || 'developer')}</p>
+                <p className="text-sm text-text-primary mt-2">{String(action?.instruction || '-')}</p>
+                {action?.path_hint ? <p className="text-xs text-text-secondary mt-1">Path: {String(action.path_hint)}</p> : null}
+              </article>
+            ))}
+          </div>
+        ) : <p className="text-sm text-text-secondary">No remediation actions generated yet.</p>}
+      </section>
+    </div>
+  );
+}
+
 export default function OutputPreview({ agentId }: { agentId: string }) {
   const { globalState } = usePipelineStore();
 
@@ -174,6 +233,8 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
         return globalState?.developer_output;
       case 'qa':
         return globalState?.qa_output;
+      case 'bugfix':
+        return globalState?.remediation_output;
       case 'docs':
         return globalState?.docs_output;
       default:
@@ -226,16 +287,21 @@ export default function OutputPreview({ agentId }: { agentId: string }) {
         );
       case 'qa':
         return (
-          <div className="bg-surface border border-border rounded-lg p-6">
-            <h3 className="text-lg font-bold text-[var(--agent-qa)] mb-4">QA Analysis</h3>
-            {payload ? (
-              <pre className="text-sm font-mono text-text-code whitespace-pre-wrap">
-                {JSON.stringify(payload, null, 2)}
-              </pre>
-            ) : (
+          payload ? <QAPanel payload={payload} /> : (
+            <div className="bg-surface border border-border rounded-lg p-6">
+              <h3 className="text-lg font-bold text-[var(--agent-qa)] mb-4">QA Insights Dashboard</h3>
               <p className="text-text-secondary italic">Waiting for QA results...</p>
-            )}
-          </div>
+            </div>
+          )
+        );
+      case 'bugfix':
+        return (
+          payload ? <BugfixPanel payload={payload} /> : (
+            <div className="bg-surface border border-border rounded-lg p-6">
+              <h3 className="text-lg font-bold text-[var(--agent-qa)] mb-4">BugFix Remediation</h3>
+              <p className="text-text-secondary italic">Waiting for bugfix planning output...</p>
+            </div>
+          )
         );
       case 'docs':
         return (

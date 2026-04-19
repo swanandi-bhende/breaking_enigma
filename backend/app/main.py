@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.redis import get_redis, close_redis, submit_human_approval
+from app.core.database import init_database, get_pipeline_run
 
 logging.basicConfig(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -28,6 +29,12 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("ADWF backend starting up…")
+
+    try:
+        await init_database()
+        logger.info("Database tables ready")
+    except Exception as exc:
+        logger.warning("Database init skipped: %s", exc)
 
     redis = await get_redis()
     await redis.ping()
@@ -66,6 +73,11 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/v1/health")
+async def api_health():
     return {"status": "ok"}
 
 
@@ -114,6 +126,14 @@ async def create_run(body: CreateRunRequest, background_tasks: BackgroundTasks):
         task_id=task_id,
         message="Pipeline started"
     )
+
+
+@app.get("/api/v1/runs/{run_id}")
+async def get_run(run_id: str):
+    run = await get_pipeline_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    return run
 
 
 # ── Human approval ─────────────────────────────

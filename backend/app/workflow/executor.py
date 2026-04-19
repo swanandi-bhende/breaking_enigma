@@ -41,6 +41,57 @@ from app.workflow.state import PipelineState
 logger = logging.getLogger(__name__)
 
 
+def _extract_developer_qa_feedback(qa_output: Any) -> Optional[Dict[str, Any]]:
+    """Normalize QA output into the compact feedback contract expected by Developer."""
+    if not isinstance(qa_output, dict):
+        return None
+
+    iteration_raw = qa_output.get("iteration", 1)
+    try:
+        iteration = int(iteration_raw)
+    except Exception:
+        iteration = 1
+
+    bugs = qa_output.get("bugs", [])
+    if not isinstance(bugs, list):
+        bugs = []
+
+    routing = qa_output.get("routing_decision", {})
+    if not isinstance(routing, dict):
+        routing = {}
+    fix_instructions = routing.get("fix_instructions", [])
+    if not isinstance(fix_instructions, list):
+        fix_instructions = []
+
+    failed_tests: list[dict[str, Any]] = []
+    traceability = qa_output.get("traceability_matrix", [])
+    if isinstance(traceability, list):
+        for row in traceability:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("status", "")).upper() == "COVERED":
+                continue
+            failed_tests.append(
+                {
+                    "user_story_id": row.get("user_story_id"),
+                    "feature_name": row.get("feature_name"),
+                    "status": row.get("status"),
+                    "implementing_files": row.get("implementing_files", []),
+                }
+            )
+
+    verdict = str(qa_output.get("verdict", "")).upper()
+    if not bugs and not fix_instructions and not failed_tests and verdict != "FAIL":
+        return None
+
+    return {
+        "iteration": max(1, iteration),
+        "failed_tests": failed_tests,
+        "bugs": bugs,
+        "fix_instructions": fix_instructions,
+    }
+
+
 # ── Custom Exceptions ────────────────────────────────────────────────────────
 
 
@@ -382,11 +433,27 @@ def _extract_input(agent_name: str, state: PipelineState) -> Dict[str, Any]:
         }
 
     if agent_name == "developer":
+        remediation_output = state.get("remediation_output")
+        remediation_feedback = None
+        if isinstance(remediation_output, dict):
+            remediation_feedback = remediation_output.get("qa_feedback")
+
+        qa_feedback = _extract_developer_qa_feedback(remediation_feedback or state.get("qa_output"))
         return {
             "run_id": run_id,
             "design_spec": state["design_spec"],
             "prd": state["prd"],
-            "qa_feedback": state.get("qa_output"),  # None on first run
+            "qa_feedback": qa_feedback,  # None on first run
+        }
+
+    if agent_name == "bugfix":
+        return {
+            "run_id": run_id,
+            "iteration": state.get("qa_iteration", 0),
+            "qa_output": state["qa_output"],
+            "developer_output": state["developer_output"],
+            "design_spec": state["design_spec"],
+            "prd": state["prd"],
         }
 
     if agent_name == "qa":
@@ -395,7 +462,8 @@ def _extract_input(agent_name: str, state: PipelineState) -> Dict[str, Any]:
             "developer_output": state["developer_output"],
             "design_spec": state["design_spec"],
             "prd": state["prd"],
-            "iteration": state.get("qa_iteration", 1),
+            "iteration": state.get("qa_iteration", 0) + 1,
+            "max_iterations": state.get("max_qa_iterations", 3),
         }
 
     if agent_name == "devops":

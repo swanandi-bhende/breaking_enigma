@@ -22,6 +22,11 @@ from app.core.config import settings
 
 logger = get_task_logger(__name__)
 
+# Reuse one asyncio event loop per Celery worker process.
+# Creating a new loop for every task can invalidate pooled async DB connections
+# and trigger asyncpg "another operation is in progress" errors.
+_WORKER_EVENT_LOOP: asyncio.AbstractEventLoop | None = None
+
 # ── Celery app instance ───────────────────────────────────────────────────────
 
 celery_app = Celery(
@@ -83,9 +88,15 @@ def run_pipeline_task(
     """
     logger.info("Starting pipeline task run_id=%s", run_id)
 
-    # Celery workers run synchronously, so we use asyncio.run()
-    # to execute the async pipeline graph.
-    return asyncio.run(_execute_pipeline(run_id, idea, config, user_id))
+    # Celery workers are sync; run async pipeline on a persistent per-process loop.
+    global _WORKER_EVENT_LOOP
+    if _WORKER_EVENT_LOOP is None or _WORKER_EVENT_LOOP.is_closed():
+        _WORKER_EVENT_LOOP = asyncio.new_event_loop()
+        asyncio.set_event_loop(_WORKER_EVENT_LOOP)
+
+    return _WORKER_EVENT_LOOP.run_until_complete(
+        _execute_pipeline(run_id, idea, config, user_id)
+    )
 
 
 async def _execute_pipeline(
