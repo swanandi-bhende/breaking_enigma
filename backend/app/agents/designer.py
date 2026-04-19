@@ -991,22 +991,37 @@ Now create the complete design specification.
 async def run_designer_agent(input_data: DesignerAgentInput | Dict[str, Any]) -> Dict[str, Any]:
     """Main entry point for Designer Agent.
 
-    Always returns a PRD-derived design spec so the output remains specific
-    to the user prompt and does not drift into generic templates.
+    Uses the LLM to generate a design spec specific to the user prompt.
+    Falls back to a PRD-derived heuristic spec if the LLM fails (e.g., rate limits).
     """
     if isinstance(input_data, dict):
         input_data = DesignerAgentInput.model_validate(input_data)
 
     run_id = str(input_data.run_id)
-    prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
-    design_spec = _build_design_spec_from_prd(prd)
-    logger.info(
-      "[designer] generated PRD-specific design_spec run_id=%s screens=%s flows=%s apis=%s",
-      run_id,
-      len(design_spec.get("screens", [])),
-      len(design_spec.get("interaction_flows", [])),
-      len(design_spec.get("api_spec", [])),
-    )
+    
+    try:
+        agent = DesignerAgent()
+        output = await agent.run(input_data)
+        design_spec = output.design_spec.model_dump(mode="json") if hasattr(output.design_spec, 'model_dump') else output.design_spec
+        logger.info(
+            "[designer] Successfully generated LLM design_spec run_id=%s screens=%s flows=%s apis=%s",
+            run_id,
+            len(design_spec.get("screens", [])),
+            len(design_spec.get("interaction_flows", [])),
+            len(design_spec.get("api_spec", [])),
+        )
+    except Exception as e:
+        logger.warning("[designer] LLM generation failed (%s), falling back to heuristics.", e)
+        prd = input_data.prd if isinstance(input_data.prd, PRD) else PRD.model_validate(input_data.prd)
+        design_spec = _build_design_spec_from_prd(prd)
+        logger.info(
+            "[designer] generated PRD-specific design_spec run_id=%s screens=%s flows=%s apis=%s",
+            run_id,
+            len(design_spec.get("screens", [])),
+            len(design_spec.get("interaction_flows", [])),
+            len(design_spec.get("api_spec", [])),
+        )
+
     return {
       "run_id": run_id,
       "design_spec": design_spec,

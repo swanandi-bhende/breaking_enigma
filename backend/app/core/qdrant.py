@@ -27,25 +27,29 @@ class QdrantManager:
 
     def _init_collections(self):
         """Initialize collections if they don't exist."""
-        collections = [c.name for c in self.client.get_collections().collections]
+        try:
+            collections = [c.name for c in self.client.get_collections().collections]
 
-        if self.COLLECTION_RESEARCH not in collections:
-            self.client.create_collection(
-                collection_name=self.COLLECTION_RESEARCH,
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
-            )
+            if self.COLLECTION_RESEARCH not in collections:
+                self.client.create_collection(
+                    collection_name=self.COLLECTION_RESEARCH,
+                    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+                )
 
-        if self.COLLECTION_PRD not in collections:
-            self.client.create_collection(
-                collection_name=self.COLLECTION_PRD,
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
-            )
+            if self.COLLECTION_PRD not in collections:
+                self.client.create_collection(
+                    collection_name=self.COLLECTION_PRD,
+                    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+                )
 
-        if self.COLLECTION_PAST_PROJECTS not in collections:
-            self.client.create_collection(
-                collection_name=self.COLLECTION_PAST_PROJECTS,
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
-            )
+            if self.COLLECTION_PAST_PROJECTS not in collections:
+                self.client.create_collection(
+                    collection_name=self.COLLECTION_PAST_PROJECTS,
+                    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+                )
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("Failed to connect to Qdrant during initialization: %s", e)
 
     async def store_research_embeddings(
         self, run_id: str, chunks: List[str], vectors: List[List[float]]

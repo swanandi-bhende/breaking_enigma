@@ -7,7 +7,7 @@ from app.schemas.agents import (
     AcceptanceCriterion,
     BudgetEstimate,
     Feature,
-    Features,
+    FeatureSet,
     ProductVision,
     PRD,
     UserFlowStep,
@@ -55,7 +55,7 @@ def _build_expense_prd() -> PRD:
                 estimated_effort="S",
             ),
         ],
-        features=Features(
+        features=FeatureSet(
             mvp=[
                 Feature(
                     id="F-001",
