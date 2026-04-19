@@ -21,6 +21,7 @@ from langgraph.graph import END, StateGraph
 from app.core.events import EventType
 from app.core.redis import publish_event, signal_human_checkpoint, wait_for_human_approval
 from app.workflow.executor import agent_executor
+from app.workflow.run_store import get_run_store
 from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 
 async def _publish_global_state_snapshot(state: PipelineState) -> None:
     """Push the latest full pipeline state to the dashboard."""
+    run_store = get_run_store(run_id=state["run_id"], config=state.get("config"))
+    await run_store.update_run_state(run_id=state["run_id"], state=dict(state))
     await publish_event(
         state["run_id"],
         EventType.GLOBAL_STATE_UPDATED,

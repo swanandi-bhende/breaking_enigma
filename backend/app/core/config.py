@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     MAX_QA_ITERATIONS: int = 3
     DEFAULT_TARGET_PLATFORM: str = "web"
     ARTIFACT_STORAGE_PATH: str = "/app/artifacts"
+    RUN_STORE_BACKEND: str = "async_persistent"
+    RUN_STORE_EXECUTION_MODE: str = "sync_db"
+    RUN_STORE_STRICT_DURABILITY: bool = False
+    RUN_STORE_FLUSH_INTERVAL_MS: int = 300
+    RUN_STORE_FLUSH_BATCH_SIZE: int = 10
+    RUN_STORE_CANARY_PERCENT: int = 0
+    RUN_STORE_SHADOW_MODE: bool = False
+    RUN_STORE_CHECKPOINT_INTERVAL_MS: int = 3000
+    RUN_STORE_CHECKPOINT_EVERY_N_EVENTS: int = 10
 
     # ── Optional External APIs ───────────────────────────────────────────────
     SERP_API_KEY: Optional[str] = None

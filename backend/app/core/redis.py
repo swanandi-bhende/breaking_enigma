@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import asyncio
+from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import redis.asyncio as aioredis
@@ -31,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 _redis_pool: Optional[Redis] = None
 _redis_pool_loop_id: Optional[int] = None
+
+RUN_STATUS_CACHE_TTL_SECONDS = 86400
 
 
 async def get_redis() -> Redis:
@@ -125,6 +128,36 @@ async def get_agent_status_cache(run_id: str, agent_name: str) -> Optional[Dict[
     """Read cached agent status. Returns None if not found."""
     redis = await get_redis()
     raw = await redis.get(_status_key(run_id, agent_name))
+    return json.loads(raw) if raw else None
+
+
+def _run_status_key(run_id: str) -> str:
+    return f"run_status:{run_id}"
+
+
+async def set_run_status_cache(
+    run_id: str,
+    state: Dict[str, Any],
+    *,
+    event_sequence: Optional[int] = None,
+) -> None:
+    """Write the latest run-level state snapshot for real-time status reads."""
+    redis = await get_redis()
+    payload = dict(state)
+    if event_sequence is not None:
+        payload["event_sequence"] = int(event_sequence)
+    payload["live_updated_at"] = datetime.now(timezone.utc).isoformat()
+    await redis.set(
+        _run_status_key(run_id),
+        json.dumps(payload),
+        ex=RUN_STATUS_CACHE_TTL_SECONDS,
+    )
+
+
+async def get_run_status_cache(run_id: str) -> Optional[Dict[str, Any]]:
+    """Read cached run-level state. Returns None if not found."""
+    redis = await get_redis()
+    raw = await redis.get(_run_status_key(run_id))
     return json.loads(raw) if raw else None
 
 

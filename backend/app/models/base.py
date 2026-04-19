@@ -41,3 +41,24 @@ class AgentRun(Base):
     error = Column(String, nullable=True)
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunEvent(Base):
+    __tablename__ = "run_events"
+
+    id = Column(String, primary_key=True, index=True)
+    run_id = Column(String, index=True, nullable=False)
+    seq = Column(Integer, index=True, nullable=False)
+    kind = Column(String, nullable=False)
+    payload = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class RunCheckpoint(Base):
+    __tablename__ = "run_checkpoints"
+
+    id = Column(String, primary_key=True, index=True)
+    run_id = Column(String, index=True, nullable=False)
+    seq = Column(Integer, index=True, nullable=False)
+    state = Column(JSON, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

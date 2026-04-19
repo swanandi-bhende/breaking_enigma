@@ -27,6 +27,7 @@ from app.core.config import settings
 from app.core.events import EventType
 from app.core.redis import publish_event, publish_log_line
 from app.schemas.agents import OrchestratorInput, OrchestratorOutput, ProjectBrief, RunState
+from app.workflow.run_store import get_run_store
 from app.workflow.state import PipelineState, initial_state
 
 logger = logging.getLogger(__name__)
@@ -139,27 +140,19 @@ async def _init_pipeline_run(run_id: str, state: PipelineState) -> None:
     Write the initial pipeline_runs and global_state rows to PostgreSQL.
     Implementation is in core/database.py (Anshul's domain).
     """
-    try:
-        from app.core.database import create_pipeline_run  # type: ignore[import]
-
-        await create_pipeline_run(
-            run_id=run_id,
-            idea=state["idea"],
-            config=state["config"],
-            user_id=state.get("user_id"),
-        )
-    except ImportError:
-        logger.warning("[orchestrator] database.create_pipeline_run not available — skipping DB init")
+    store = get_run_store(run_id=run_id, config=state.get("config"))
+    await store.begin_run(
+        run_id=run_id,
+        idea=state["idea"],
+        config=state["config"],
+        user_id=state.get("user_id"),
+    )
 
 
 async def _update_global_state(run_id: str, state: PipelineState) -> None:
     """Upsert the global_state JSON snapshot for fast dashboard reads."""
-    try:
-        from app.core.database import upsert_global_state  # type: ignore[import]
-
-        await upsert_global_state(run_id=run_id, state=dict(state))
-    except ImportError:
-        logger.warning("[orchestrator] database.upsert_global_state not available — skipping")
+    store = get_run_store(run_id=run_id, config=state.get("config"))
+    await store.update_run_state(run_id=run_id, state=dict(state))
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

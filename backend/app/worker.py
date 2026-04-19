@@ -19,6 +19,7 @@ from celery import Celery
 from celery.utils.log import get_task_logger
 
 from app.core.config import settings
+from app.workflow.run_store import clear_run_store, get_run_store
 
 logger = get_task_logger(__name__)
 
@@ -118,6 +119,8 @@ async def _execute_pipeline(
     from app.workflow.graph import pipeline_graph
 
     try:
+        run_store = get_run_store(run_id=run_id, config=config)
+
         # Step 1 — Orchestrator initialises the state
         initial = await run_orchestrator(
             run_id=run_id,
@@ -130,12 +133,9 @@ async def _execute_pipeline(
         logger.info("Invoking LangGraph pipeline for run_id=%s", run_id)
         final_state = await pipeline_graph.ainvoke(initial)
 
-        # Step 3 — Persist final global_state snapshot
-        try:
-            from app.core.database import upsert_global_state  # type: ignore[import]
-            await upsert_global_state(run_id=run_id, state=dict(final_state))
-        except ImportError:
-            logger.warning("database.upsert_global_state not available — skipping final persist")
+        # Step 3 — Finalize and flush state persistence for this run
+        await run_store.finalize_run(run_id=run_id, final_state=dict(final_state))
+        clear_run_store(run_id)
 
         logger.info(
             "Pipeline complete for run_id=%s, run_state=%s",
@@ -146,6 +146,22 @@ async def _execute_pipeline(
 
     except Exception as exc:
         logger.exception("Pipeline task FAILED for run_id=%s: %s", run_id, exc)
+
+        try:
+            run_store = get_run_store(run_id=run_id, config=config)
+            await run_store.finalize_run(
+                run_id=run_id,
+                final_state={
+                    "run_id": run_id,
+                    "idea": idea,
+                    "config": config or {},
+                    "run_state": "FAILED",
+                    "error": str(exc),
+                },
+            )
+            clear_run_store(run_id)
+        except Exception:
+            logger.exception("Failed to finalize run_store for failed run_id=%s", run_id)
 
         # Emit failure event so the dashboard knows
         try:

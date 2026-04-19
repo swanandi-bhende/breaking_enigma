@@ -36,6 +36,7 @@ from app.core.redis import (
     set_agent_status_cache,
 )
 from app.schemas.agents import AGENT_SCHEMAS
+from app.workflow.run_store import get_run_store
 from app.workflow.state import PipelineState
 
 logger = logging.getLogger(__name__)
@@ -111,66 +112,6 @@ class AgentMaxRetriesError(RuntimeError):
     """Raised when an agent fails and has reached the configured retry limit."""
 
 
-# ── Persistence stubs (implemented by Anshul in core/database.py) ────────────
-
-
-async def _persist_agent_run(
-    run_id: str,
-    agent_name: str,
-    iteration: int,
-    input_payload: Dict[str, Any],
-    output_payload: Optional[Dict[str, Any]],
-    status: str,
-    duration_ms: int,
-    error_details: Optional[Dict[str, Any]] = None,
-) -> None:
-    """
-    Write an agent_runs row to PostgreSQL.
-    Implementation lives in backend/app/core/database.py (Anshul's domain).
-    This wrapper calls it via a late import to avoid circular dependencies.
-    """
-    try:
-        from app.core.database import save_agent_run  # type: ignore[import]
-
-        await save_agent_run(
-            run_id=run_id,
-            agent_name=agent_name,
-            iteration=iteration,
-            input_payload=input_payload,
-            output_payload=output_payload,
-            status=status,
-            duration_ms=duration_ms,
-            error_details=error_details,
-        )
-    except ImportError:
-        # Database module not yet available (unit tests / early development)
-        logger.warning("database.save_agent_run not available — skipping persistence")
-
-
-async def _persist_artifact(
-    run_id: str,
-    agent_name: str,
-    artifact_type: str,
-    content: Dict[str, Any],
-    version: int = 1,
-) -> None:
-    """
-    Write an artifacts row to PostgreSQL.
-    Implementation lives in backend/app/core/database.py.
-    """
-    try:
-        from app.core.database import save_artifact  # type: ignore[import]
-
-        await save_artifact(
-            run_id=run_id,
-            artifact_type=artifact_type,
-            content=content,
-            version=version,
-        )
-    except ImportError:
-        logger.warning("database.save_artifact not available — skipping artifact persistence")
-
-
 # ── Input / Output Validation ────────────────────────────────────────────────
 
 
@@ -243,6 +184,7 @@ async def agent_executor(
         AgentMaxRetriesError        — exhausted retries without success.
     """
     run_id = state["run_id"]
+    run_store = get_run_store(run_id=run_id, config=state.get("config"))
     start_ts = time.monotonic()
 
     # ── 1. Acquire lock ──────────────────────────────────────────────────────
@@ -318,7 +260,7 @@ async def agent_executor(
 
         # ── 6. Persist to PostgreSQL ─────────────────────────────────────────
         duration_ms = int((time.monotonic() - start_ts) * 1000)
-        await _persist_agent_run(
+        await run_store.append_agent_result(
             run_id=run_id,
             agent_name=agent_name,
             iteration=iteration,
@@ -327,9 +269,8 @@ async def agent_executor(
             status="COMPLETE",
             duration_ms=duration_ms,
         )
-        await _persist_artifact(
+        await run_store.append_artifact(
             run_id=run_id,
-            agent_name=agent_name,
             artifact_type=f"{agent_name}_output",
             content=output_dict,
             version=iteration,
@@ -375,7 +316,7 @@ async def agent_executor(
         )
         await publish_log_line(run_id, agent_name, f"[{agent_name}] FAILED: {error_msg}", level=LogLevel.ERROR)
 
-        await _persist_agent_run(
+        await run_store.append_agent_result(
             run_id=run_id,
             agent_name=agent_name,
             iteration=iteration,
